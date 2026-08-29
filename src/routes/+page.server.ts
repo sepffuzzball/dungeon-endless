@@ -2,6 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { CharacterCard, DashboardAchievement, RunSummary } from '$lib/types';
 import { requireUser } from '$lib/server/authorization';
 import { db } from '$lib/server/db';
+import { deriveStatBreakdowns, deriveStats, provisionPersistentGear } from '$lib/server/game';
 import { achievements, characters, runs, userAchievements, users } from '$lib/server/schema';
 import type { PageServerLoad } from './$types';
 
@@ -19,22 +20,41 @@ export const load: PageServerLoad = async (event) => {
 		.where(and(eq(runs.userId, user.id), eq(runs.status, 'active')));
 	const activeRunByCharacter = new Map(activeRows.map((row) => [row.characterId, row.runId]));
 
-	const charactersView: CharacterCard[] = characterRows.map((row) => ({
-		id: row.id,
-		name: row.name,
-		title: row.title,
-		species: row.species,
-		className: row.className,
-		level: row.level,
-		body: row.body,
-		mind: row.mind,
-		spirit: row.spirit,
-		imageUrl: row.imageUrl,
-		gearBonus: row.gearBonus,
-		maxStartRoom: row.maxStartRoom,
-		furthestDepth: row.furthestFloor,
-		activeRunId: activeRunByCharacter.get(row.id)
-	}));
+	const charactersView: CharacterCard[] = characterRows.map((row) => {
+		const input = {
+			body: row.body,
+			mind: row.mind,
+			spirit: row.spirit,
+			level: row.level,
+			hp: 0,
+			maxHp: 0,
+			defense: 5 + row.level,
+			attackBonus: row.body + row.level,
+			inventory: provisionPersistentGear(row.gearBonus)
+		};
+		const stats = deriveStats(input);
+		return {
+			id: row.id,
+			name: row.name,
+			title: row.title,
+			species: row.species,
+			className: row.className,
+			level: row.level,
+			body: row.body,
+			mind: row.mind,
+			spirit: row.spirit,
+			effectiveBody: stats.body,
+			effectiveMind: stats.mind,
+			effectiveSpirit: stats.spirit,
+			skillValues: stats.skillValues,
+			breakdowns: deriveStatBreakdowns(input),
+			imageUrl: row.imageUrl,
+			gearBonus: row.gearBonus,
+			maxStartRoom: row.maxStartRoom,
+			furthestDepth: row.furthestFloor,
+			activeRunId: activeRunByCharacter.get(row.id)
+		};
+	});
 
 	const activeRunRows = await db
 		.select({

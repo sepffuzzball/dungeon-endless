@@ -1,8 +1,18 @@
 <script lang="ts">
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Portrait from '$lib/components/Portrait.svelte';
+	import StatBreakdown from '$lib/components/StatBreakdown.svelte';
 	import Wallet from '$lib/components/Wallet.svelte';
+	import type { SkillName } from '$lib/types';
 	let { data, form } = $props();
+	const attributeGroups: {
+		stat: 'body' | 'mind' | 'spirit';
+		skills: [SkillName, SkillName];
+	}[] = [
+		{ stat: 'body', skills: ['Athletics', 'Stealth'] },
+		{ stat: 'mind', skills: ['Knowledge', 'Magic'] },
+		{ stat: 'spirit', skills: ['Persuasion', 'Willpower'] }
+	];
 </script>
 
 <svelte:head><title>Characters | Dungeon of the Endless</title></svelte:head>
@@ -49,10 +59,23 @@
 						><small>Gear</small>+{character.gearBonus}</span
 					><span><small>Start room</small>{character.maxStartRoom}</span>
 				</div>
-				<div class="mini-stats">
-					<span><small>Body</small>{character.body}</span><span
-						><small>Mind</small>{character.mind}</span
-					><span><small>Spirit</small>{character.spirit}</span>
+				<div class="attribute-groups" aria-label={`${character.name} attributes and skills`}>
+					{#each attributeGroups as group}
+						<div class="attribute-group">
+							<StatBreakdown
+								breakdown={character.breakdowns.attributes[group.stat]}
+								uid={`${character.id}-${group.stat}`}
+							/>
+							<div class="skill-ranks">
+								{#each group.skills as skill}
+									<StatBreakdown
+										breakdown={character.breakdowns.skills[skill]}
+										uid={`${character.id}-${skill}`}
+									/>
+								{/each}
+							</div>
+						</div>
+					{/each}
 				</div>
 				<div class="actions character-links">
 					<a class="btn btn-secondary" href={`/characters/${character.id}/edit`}>Edit</a>
@@ -124,7 +147,7 @@
 		gap: 1rem;
 	}
 	.character-card {
-		overflow: hidden;
+		overflow: visible;
 	}
 	.character-profile {
 		display: grid;
@@ -134,6 +157,25 @@
 	}
 	.character-links {
 		margin: 1rem 0;
+	}
+	.attribute-groups {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.5rem;
+	}
+	.attribute-group {
+		min-width: 0;
+		padding: 0.3rem;
+		border: 1px solid var(--line);
+		border-radius: 9px;
+		background: rgba(7, 11, 17, 0.35);
+	}
+	.attribute-group > :global(.stat-breakdown) :global(.stat-breakdown-trigger) {
+		font-weight: 700;
+	}
+	.skill-ranks {
+		padding-top: 0.2rem;
+		border-top: 1px solid var(--line);
 	}
 	.upgrades {
 		border-top: 1px solid var(--border);
@@ -174,6 +216,13 @@
 		}
 		.character-links {
 			display: grid;
+		}
+		.attribute-groups {
+			grid-template-columns: 1fr;
+		}
+		.skill-ranks {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
 		}
 	}
 </style>

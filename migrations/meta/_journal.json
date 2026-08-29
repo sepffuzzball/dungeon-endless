@@ -29,6 +29,13 @@
 			"when": 1788012045183,
 			"tag": "0003_powerful_mandroid",
 			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "7",
+			"when": 1788037556527,
+			"tag": "0004_mysterious_franklin_richards",
+			"breakpoints": true
 		}
 	]
 }

@@ -16,6 +16,9 @@ vi.mock('../src/lib/server/validation', () => ({
 import {
 	OpenAiSseDecoder,
 	callChatStream,
+	fallbackProse,
+	fallbackRoomEntry,
+	fallbackSummary,
 	parseSseChunk,
 	streamProse,
 	streamRoomEntry,
@@ -64,6 +67,156 @@ const proseInput = {
 		message: 'won'
 	}
 };
+
+const roll = (total: number, target: number) => ({
+	label: 'Attack',
+	dice: [total],
+	selected: total,
+	modifier: 0,
+	total,
+	target,
+	success: total >= target,
+	advantage: 0
+});
+
+describe('deterministic prose fallbacks', () => {
+	it('writes the submitted action as its own sentence before a successful near-roll outcome', () => {
+		const text = fallbackProse(
+			{ type: 'monster', name: 'Watcher' },
+			'I strike hard',
+			{ ...proseInput.outcome, message: 'The Watcher falls.' },
+			[roll(9, 8)]
+		);
+		expect(text).toMatch(/^You strike hard\.\n\n/);
+		expect(text).toContain('The Watcher falls.');
+		expect(text).toContain('a near result by 1');
+		expect(text).toContain('Your HP remains 5');
+		expect(text).toContain('No injury is recorded');
+	});
+
+	it('reports failure, a wide roll, HP loss, and injury coherently', () => {
+		const text = fallbackProse(
+			{ type: 'trap', name: 'Needle Floor' },
+			'I leap across.',
+			{
+				result: 'failure',
+				hpBefore: 5,
+				hpAfter: 4,
+				hpDelta: -1,
+				message: 'The needles catch you.',
+				injury: 'a punctured heel'
+			},
+			[roll(3, 8)]
+		);
+		expect(text).toMatch(/^You leap across\.\n\n/);
+		expect(text).toContain('a wide result by 5');
+		expect(text).toContain('falling from 5 to 4');
+		expect(text).toContain('The recorded injury is a punctured heel');
+	});
+
+	it('states when no roll is required and covers every room fallback', () => {
+		for (const type of ['monster', 'boss', 'trap', 'treasure', 'rest'] as const) {
+			const text = fallbackProse(
+				{ type, name: 'Named Threat' },
+				'I proceed carefully',
+				{
+					result: type === 'rest' ? 'rest' : type === 'treasure' ? 'reward' : 'success',
+					hpBefore: 5,
+					hpAfter: type === 'rest' ? 6 : 5,
+					hpDelta: type === 'rest' ? 1 : 0,
+					message: 'The outcome is settled.'
+				},
+				[]
+			);
+			expect(text).toContain('No roll is required.');
+			expect(text.toLowerCase()).not.toContain('step into named threat');
+		}
+	});
+
+	it('keeps every room-entry fallback environment-first and within two paragraphs', () => {
+		for (const type of ['monster', 'boss', 'trap', 'treasure', 'rest'] as const) {
+			const text = fallbackRoomEntry(
+				{ type, name: 'Named Threat', description: 'A saved description.' },
+				'A saved run summary.'
+			);
+			expect(text.split(/\n\n/)).toHaveLength(2);
+			expect(text.toLowerCase()).not.toContain('step into named threat');
+			expect(text.indexOf('Named Threat')).toBeGreaterThan(text.indexOf('\n\n'));
+		}
+	});
+});
+
+describe('deterministic summary fallbacks', () => {
+	it('normalizes a first-person action into second person', () => {
+		const text = fallbackSummary({ type: 'monster', name: 'Watcher' }, 'I attack the watcher', {
+			result: 'success',
+			hpBefore: 5,
+			hpAfter: 5,
+			hpDelta: 0,
+			message: 'The watcher falls.'
+		});
+		expect(text).toMatch(/^You attack the watcher\./);
+	});
+
+	it('trims duplicate punctuation from submitted actions', () => {
+		const text = fallbackSummary({ type: 'trap', name: 'Needle Floor' }, 'I leap across!', {
+			result: 'success',
+			hpBefore: 5,
+			hpAfter: 5,
+			hpDelta: 0,
+			message: 'You make it.'
+		});
+		expect(text).toMatch(/^You leap across\./);
+		expect(text).not.toContain('!');
+	});
+
+	it('distinguishes an unchanged HP from a recovered one', () => {
+		const unchanged = fallbackSummary({ type: 'monster', name: 'Watcher' }, 'guard the corridor', {
+			result: 'success',
+			hpBefore: 5,
+			hpAfter: 5,
+			hpDelta: 0,
+			message: 'All clear.'
+		});
+		const recovered = fallbackSummary({ type: 'rest', name: 'Long Hall' }, 'I rest here', {
+			result: 'rest',
+			hpBefore: 5,
+			hpAfter: 6,
+			hpDelta: 1,
+			message: 'You feel restored.'
+		});
+		expect(unchanged).toContain('HP was unchanged');
+		expect(recovered).toContain('recovered 1 HP');
+		expect(recovered).toMatch(/^You rest here\./);
+	});
+
+	it('reports recovered rewards when present', () => {
+		const text = fallbackSummary({ type: 'treasure', name: 'Cache' }, 'open the chest', {
+			result: 'reward',
+			hpBefore: 5,
+			hpAfter: 5,
+			hpDelta: 0,
+			message: 'Loot taken.',
+			rewards: [{ kind: 'valuable', name: 'Gem' }]
+		});
+		expect(text).toContain('recovered 1 item');
+		expect(text).toContain('Loot taken.');
+	});
+
+	it('reports failure with HP loss and injury without inventing state', () => {
+		const text = fallbackSummary({ type: 'trap', name: 'Needle Floor' }, 'spring the trap', {
+			result: 'failure',
+			hpBefore: 5,
+			hpAfter: 3,
+			hpDelta: -2,
+			message: 'The needles catch you.',
+			injury: 'a punctured heel'
+		});
+		expect(text).toContain('lost 2 HP');
+		expect(text).toContain('a punctured heel');
+		expect(text).toContain('The needles catch you.');
+	});
+});
 
 describe('OpenAI SSE decoding', () => {
 	it('preserves split UTF-8 and handles CRLF, comments, multiline data and a residual line', () => {

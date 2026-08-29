@@ -3,6 +3,7 @@ import {
 	SKILLS,
 	type InventoryItem,
 	type LlmPurpose,
+	type RollRecord,
 	type RoomSnapshot,
 	type SuggestedAction,
 	type TurnOutcome
@@ -491,43 +492,104 @@ export function parseSuggestions(content: string): SuggestedAction[] {
 export function fallbackProse(
 	room: RoomSnapshot,
 	actionText: string,
-	outcome: TurnOutcome
+	outcome: TurnOutcome,
+	rolls: RollRecord[] = []
 ): string {
-	const noun = room.name ?? `the ${room.type}`;
+	const inline = (value: string, maxChars: number) =>
+		value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+	const noun = (room.name ? inline(room.name, 200) : '') || `the ${room.type}`;
+	const action = actionText
+		.replace(/\s+/g, ' ')
+		.trim()
+		.replace(/^I\s+/i, '')
+		.replace(/[.!?]+$/, '')
+		.trim();
+	const submitted = action ? `You ${action}.` : 'You hold your ground.';
+	// Strongest roll by total, else the first roll, else none.
+	const primary = [...rolls].sort((a, b) => b.total - a.total)[0] ?? rolls[0];
+	const margin = primary ? primary.total - primary.target : 0;
+	const rollNote = primary
+		? `The authoritative ${primary.label || 'check'} roll is ${primary.total} against ${primary.target}, ${
+				Math.abs(margin) <= 1 ? 'a near result' : 'a wide result'
+			} by ${Math.abs(margin)}.`
+		: 'No roll is required.';
+	const won = outcome.result === 'success' || outcome.result === 'reward';
+	const hp =
+		outcome.hpDelta < 0
+			? `You lose ${Math.abs(outcome.hpDelta)} HP, falling from ${outcome.hpBefore} to ${outcome.hpAfter}.`
+			: outcome.hpDelta > 0
+				? `You recover ${outcome.hpDelta} HP, rising from ${outcome.hpBefore} to ${outcome.hpAfter}.`
+				: `Your HP remains ${outcome.hpAfter}.`;
+	const injury = outcome.injury
+		? `The recorded injury is ${inline(outcome.injury, 500)}.`
+		: 'No injury is recorded.';
+	let scene: string;
 	switch (room.type) {
 		case 'monster':
 		case 'boss':
-			return outcome.result === 'success' || outcome.result === 'reward'
-				? `You press your attack and ${noun} is brought down before you.`
-				: `The clash with ${noun} goes against you and you come away wounded.`;
+			scene = won
+				? `${noun} meets the attempt, but the exchange ends in your favor.`
+				: `${noun} meets the attempt and forces the exchange against you.`;
+			break;
 		case 'trap':
-			return outcome.result === 'success' || outcome.result === 'reward'
-				? `You thread your way past ${noun} without harm.`
-				: `${noun} catches you and you take a wound.`;
+			scene = won
+				? `The mechanism of ${noun} is read correctly, and the hazard is overcome.`
+				: `The mechanism of ${noun} answers the attempt before you can clear the hazard.`;
+			break;
 		case 'treasure':
-			return `You search ${noun} and ${outcome.result === 'reward' ? 'come away with spoils' : 'find it guarded against you'}.`;
+			scene = `The cache of ${noun} yields only what the authoritative outcome grants.`;
+			break;
 		case 'rest':
-			return `You settle into ${noun} and rest, feeling steadier for it.`;
+			scene = `The shelter of ${noun} remains quiet while the authoritative outcome takes effect.`;
+			break;
 	}
+	return `${submitted}\n\n${scene} ${inline(outcome.message, 2000)} ${rollNote} ${hp} ${injury}`.trim();
 }
 
 /** Deterministic room-entry prose used when no upstream endpoint can respond. */
 export function fallbackRoomEntry(room: RoomSnapshot, runSummary: string): string {
-	const noun = room.name ?? `the ${room.type}`;
-	const entry = room.description?.trim()
-		? `You step into ${noun}. ${room.description.trim()}`
-		: `You step into ${noun} and take in the chamber around you.`;
-	if (runSummary.trim()) return `${entry}\n\n${runSummary.trim()}`;
-	return entry;
+	const inline = (value: string, maxChars: number) =>
+		value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+	const noun = (room.name ? inline(room.name, 200) : '') || `the ${room.type}`;
+	const description = room.description ? inline(room.description, 2000) : '';
+	const detail = description ? ` ${description}` : '';
+	let setup = '';
+	let reveal = '';
+	switch (room.type) {
+		case 'monster':
+		case 'boss':
+			setup =
+				'The air grows heavy as you press deeper, the light thinning to a dull, uneven gloom. Dust hangs in the stillness, and the faint, sour scent of something large and patient reaches you before you see it.';
+			reveal = `Then, out of the dark, ${noun} resolves itself and fills the space with its presence.${detail}`;
+			break;
+		case 'trap':
+			setup =
+				'You come into a chamber that feels wrong in small ways: a floor laid too evenly, a glint of wire at ankle height, stones set with unnatural care.';
+			reveal = `Somewhere in the shadows ${noun} waits, still and ready.${detail}`;
+			break;
+		case 'treasure':
+			setup =
+				'A chamber opens before you, half-lit and oddly still, the dust along one wall disturbed by recent passage.';
+			reveal = `There, half-concealed, sits ${noun}, waiting to be claimed.${detail}`;
+			break;
+		case 'rest':
+			setup =
+				'You find a sheltered alcove, quieter than the rest of the dungeon, the air softer and still.';
+			reveal = `This is ${noun}, a place to catch your breath.${detail}`;
+			break;
+	}
+	const history = inline(runSummary, 2000);
+	return `${setup}\n\n${reveal}${history ? ` ${history}` : ''}`;
 }
 
 /** Deterministic fallback prose as a stream of visible text chunks. */
 export async function* fallbackProseStream(
 	room: RoomSnapshot,
 	actionText: string,
-	outcome: TurnOutcome
+	outcome: TurnOutcome,
+	rolls: RollRecord[] = []
 ): AsyncGenerator<StreamChunk> {
-	const text = fallbackProse(room, actionText, outcome);
+	const text = fallbackProse(room, actionText, outcome, rolls);
 	yield* chunkFallback(text);
 }
 
@@ -548,17 +610,40 @@ async function* chunkFallback(text: string): AsyncGenerator<StreamChunk> {
 	}
 }
 
+/** Normalizes a submitted action into a second-person summary phrase. */
+function normalizeSummaryAction(raw: string): string {
+	const action = raw
+		.replace(/\s+/g, ' ')
+		.trim()
+		.replace(/[.!?]+$/, '')
+		.trim();
+	if (!action) return '';
+	if (/^I\s+/i.test(action)) return `You ${action.replace(/^I\s+/i, '').trim()}.`;
+	if (/^You\s+/i.test(action)) return `${action}.`;
+	return `You attempt: ${action}.`;
+}
+
 export function fallbackSummary(
 	room: RoomSnapshot,
 	actionText: string,
 	outcome: TurnOutcome
 ): string {
+	const inline = (value: string, maxChars: number) =>
+		value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+	const what = normalizeSummaryAction(actionText) || `You dealt with the ${room.type}.`;
 	const hp =
-		outcome.hpDelta >= 0
-			? `You recovered ${outcome.hpDelta} HP.`
-			: `You lost ${Math.abs(outcome.hpDelta)} HP.`;
-	const what = actionText.trim() ? `You ${actionText.trim()}.` : `You dealt with the ${room.type}.`;
-	return `${what} ${hp}`;
+		outcome.hpDelta < 0
+			? `You lost ${Math.abs(outcome.hpDelta)} HP.`
+			: outcome.hpDelta > 0
+				? `You recovered ${outcome.hpDelta} HP.`
+				: 'Your HP was unchanged.';
+	const injury = outcome.injury ? ` You were injured: ${inline(outcome.injury, 300)}.` : '';
+	const reward =
+		outcome.rewards && outcome.rewards.length > 0
+			? ` You recovered ${outcome.rewards.length} item${outcome.rewards.length === 1 ? '' : 's'}.`
+			: '';
+	const message = outcome.message ? ` ${inline(outcome.message, 500)}` : '';
+	return `${what}${message} ${hp}${injury}${reward}`.trim();
 }
 
 export function fallbackSuggestions(room: RoomSnapshot): SuggestedAction[] {
@@ -623,14 +708,16 @@ export interface ProseInput {
 	room: RoomSnapshot;
 	actionText: string;
 	outcome: TurnOutcome;
+	/** Authoritative roll records; legacy or missing turns pass an empty list. */
+	rolls?: RollRecord[];
 	endpoints: readonly EndpointSource[];
 	signal?: AbortSignal;
 }
 
 /** Fetches prose narration for a resolved turn, or deterministic prose. */
 export async function narrateProse(input: ProseInput): Promise<string> {
-	const { system, room, actionText, outcome } = input;
-	const prompt = composeProse({ system, room, actionText, outcome });
+	const { system, room, actionText, outcome, rolls } = input;
+	const prompt = composeProse({ system, room, actionText, outcome, rolls });
 	return runPurpose(
 		'prose',
 		input.endpoints,
@@ -638,7 +725,7 @@ export async function narrateProse(input: ProseInput): Promise<string> {
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		fallbackProse(room, actionText, outcome)
+		fallbackProse(room, actionText, outcome, rolls)
 	);
 }
 
@@ -650,13 +737,13 @@ export async function narrateProse(input: ProseInput): Promise<string> {
  * fallback prose.
  */
 export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChunk> {
-	const { system, room, actionText, outcome } = input;
+	const { system, room, actionText, outcome, rolls } = input;
 	const endpoint = pickEndpoint(input.endpoints, 'prose');
 	if (!endpoint) {
-		yield* fallbackProseStream(room, actionText, outcome);
+		yield* fallbackProseStream(room, actionText, outcome, rolls);
 		return;
 	}
-	const prompt = composeProse({ system, room, actionText, outcome });
+	const prompt = composeProse({ system, room, actionText, outcome, rolls });
 	let emitted = false;
 	try {
 		for await (const chunk of callChatStream(
@@ -675,10 +762,10 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 		}
 	} catch (error) {
 		if (emitted) throw error;
-		yield* fallbackProseStream(room, actionText, outcome);
+		yield* fallbackProseStream(room, actionText, outcome, rolls);
 		return;
 	}
-	if (!emitted) yield* fallbackProseStream(room, actionText, outcome);
+	if (!emitted) yield* fallbackProseStream(room, actionText, outcome, rolls);
 }
 
 export interface RoomEntryStreamInput {

@@ -6,6 +6,8 @@ import {
 	type RoomSnapshot,
 	type RunMeta,
 	type SkillName,
+	type StatBreakdown,
+	type StatBreakdowns,
 	type TrapDefinition,
 	type TurnIntent,
 	type TurnOutcome
@@ -211,10 +213,10 @@ export interface StatInput {
 	gearCap?: number;
 }
 
-/** Effective stats after applying carried magic gear, with primary gear capped. */
-export function deriveStats(input: StatInput): DerivedStats {
+function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: StatBreakdowns } {
 	const gearCap = input.gearCap ?? DEFAULT_GEAR_CAP;
-	const primaryBonus: Record<PrimaryStat, number> = { body: 0, mind: 0, spirit: 0 };
+	const generalBonus = { body: 0, mind: 0, spirit: 0 };
+	const matchingBonus = { body: 0, mind: 0, spirit: 0 };
 	const skillBonus: Partial<Record<SkillName, number>> = {};
 	let attackBonus = 0;
 	let defenseBonus = 0;
@@ -223,18 +225,18 @@ export function deriveStats(input: StatInput): DerivedStats {
 		if (item.kind !== 'magic') continue;
 		switch (item.stat) {
 			case 'body':
-				primaryBonus.body += GEAR_BONUS_PER_ITEM;
+				matchingBonus.body += GEAR_BONUS_PER_ITEM;
 				break;
 			case 'mind':
-				primaryBonus.mind += GEAR_BONUS_PER_ITEM;
+				matchingBonus.mind += GEAR_BONUS_PER_ITEM;
 				break;
 			case 'spirit':
-				primaryBonus.spirit += GEAR_BONUS_PER_ITEM;
+				matchingBonus.spirit += GEAR_BONUS_PER_ITEM;
 				break;
 			case 'general':
-				primaryBonus.body += GEAR_BONUS_PER_ITEM;
-				primaryBonus.mind += GEAR_BONUS_PER_ITEM;
-				primaryBonus.spirit += GEAR_BONUS_PER_ITEM;
+				generalBonus.body += GEAR_BONUS_PER_ITEM;
+				generalBonus.mind += GEAR_BONUS_PER_ITEM;
+				generalBonus.spirit += GEAR_BONUS_PER_ITEM;
 				break;
 			case 'skill':
 				if (item.skill)
@@ -249,10 +251,11 @@ export function deriveStats(input: StatInput): DerivedStats {
 		}
 	}
 
-	const cap = (base: number, bonus: number): number => base + Math.min(bonus, gearCap);
-	const body = cap(input.body, primaryBonus.body);
-	const mind = cap(input.mind, primaryBonus.mind);
-	const spirit = cap(input.spirit, primaryBonus.spirit);
+	const effectivePrimary = (stat: PrimaryStat): number =>
+		input[stat] + Math.min(generalBonus[stat] + matchingBonus[stat], gearCap);
+	const body = effectivePrimary('body');
+	const mind = effectivePrimary('mind');
+	const spirit = effectivePrimary('spirit');
 
 	const skillValues = {} as Record<SkillName, number>;
 	for (const skill of SKILLS) {
@@ -261,7 +264,7 @@ export function deriveStats(input: StatInput): DerivedStats {
 		skillValues[skill] = base + (skillBonus[skill] ?? 0);
 	}
 
-	return {
+	const stats: DerivedStats = {
 		body,
 		mind,
 		spirit,
@@ -271,6 +274,91 @@ export function deriveStats(input: StatInput): DerivedStats {
 		attackBonus: input.attackBonus + attackBonus,
 		skillValues
 	};
+
+	const attributeBreakdown = (stat: PrimaryStat): StatBreakdown => {
+		const label = stat[0].toUpperCase() + stat.slice(1);
+		const uncappedBonus = generalBonus[stat] + matchingBonus[stat];
+		const capAdjustment = Math.min(uncappedBonus, gearCap) - uncappedBonus;
+		return {
+			label,
+			total: stats[stat],
+			parts: [
+				{ label: `${label} base`, value: input[stat] },
+				{ label: 'General equipment', value: generalBonus[stat] },
+				{ label: `${label} equipment`, value: matchingBonus[stat] },
+				...(capAdjustment < 0 ? [{ label: `Gear cap (${gearCap})`, value: capAdjustment }] : [])
+			],
+			formula: `Base + equipment (equipment capped at ${gearCap})`
+		};
+	};
+	const attributes = {
+		body: attributeBreakdown('body'),
+		mind: attributeBreakdown('mind'),
+		spirit: attributeBreakdown('spirit')
+	};
+	const skills = {} as Record<SkillName, StatBreakdown>;
+	for (const skill of SKILLS) {
+		const primary = SKILL_PRIMARY[skill];
+		const primaryLabel = primary[0].toUpperCase() + primary.slice(1);
+		skills[skill] = {
+			label: skill,
+			total: skillValues[skill],
+			parts: [
+				{ label: primaryLabel, value: stats[primary] },
+				{ label: `${skill} equipment`, value: skillBonus[skill] ?? 0 }
+			]
+		};
+	}
+	const attackBaseAdjustment = input.attackBonus - input.body - input.level;
+	const defenseBase = input.defense - input.level;
+	return {
+		stats,
+		breakdowns: {
+			attributes,
+			skills,
+			instinct: {
+				label: 'Instinct',
+				total: stats.instinct,
+				parts: [
+					{ label: 'Body', value: body },
+					{ label: 'Mind', value: mind },
+					{ label: 'Spirit', value: spirit }
+				],
+				formula: 'Informational total; it does not currently drive checks.'
+			},
+			defense: {
+				label: 'Defense',
+				total: stats.defense,
+				parts: [
+					{ label: 'Base', value: defenseBase },
+					{ label: 'Level', value: input.level },
+					{ label: 'Defense equipment', value: defenseBonus }
+				]
+			},
+			attack: {
+				label: 'Attack',
+				total: stats.attackBonus,
+				parts: [
+					{ label: 'Body base', value: input.body },
+					{ label: 'Level', value: input.level },
+					...(attackBaseAdjustment !== 0
+						? [{ label: 'Base attack adjustment', value: attackBaseAdjustment }]
+						: []),
+					{ label: 'Attack equipment', value: attackBonus }
+				]
+			}
+		}
+	};
+}
+
+/** Effective stats after applying carried magic gear, with primary gear capped. */
+export function deriveStats(input: StatInput): DerivedStats {
+	return deriveStatResult(input).stats;
+}
+
+/** Explanations produced by the same calculation as deriveStats. */
+export function deriveStatBreakdowns(input: StatInput): StatBreakdowns {
+	return deriveStatResult(input).breakdowns;
 }
 
 /* ------------------------------------------------------------------ *

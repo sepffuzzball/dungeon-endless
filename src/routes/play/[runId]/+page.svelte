@@ -2,7 +2,8 @@
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import type { PendingNarration, TerminalEvent } from '$lib/types';
+	import StatBreakdown from '$lib/components/StatBreakdown.svelte';
+	import type { PendingNarration, SkillName, TerminalEvent } from '$lib/types';
 	import type { SubmitFunction } from '@sveltejs/kit';
 
 	let { data, form } = $props();
@@ -14,6 +15,14 @@
 	let activeStreams = $state<Record<string, boolean>>({});
 	let terminal: HTMLElement;
 	let stickToBottom = true;
+	const attributeGroups: {
+		stat: 'body' | 'mind' | 'spirit';
+		skills: [SkillName, SkillName];
+	}[] = [
+		{ stat: 'body', skills: ['Athletics', 'Stealth'] },
+		{ stat: 'mind', skills: ['Knowledge', 'Magic'] },
+		{ stat: 'spirit', skills: ['Persuasion', 'Willpower'] }
+	];
 
 	let roomPending = $derived(
 		data.room.entryStatus === 'pending' || data.room.entryStatus === 'streaming'
@@ -21,6 +30,16 @@
 	let actionsDisabled = $derived(
 		submitting || (hydrated && (roomPending || Object.keys(activeStreams).length > 0))
 	);
+	let awaitingTurn = $derived(data.awaitingTurn);
+	let turnPending = $derived(
+		awaitingTurn && (awaitingTurn.status === 'pending' || awaitingTurn.status === 'streaming')
+	);
+	let proceedDisabled = $derived(
+		submitting ||
+			!awaitingTurn ||
+			(hydrated && (turnPending || Object.keys(activeStreams).length > 0))
+	);
+	let dmActive = $derived(submitting || Object.keys(activeStreams).length > 0);
 	let roomProse = $derived(
 		data.room.entryId && liveText[data.room.entryId] !== undefined
 			? liveText[data.room.entryId]
@@ -54,7 +73,35 @@
 			await invalidateAll();
 			if (payload.success && payload.turnId) {
 				await consume({ kind: 'turn', id: payload.turnId });
-				if (payload.roomEntryId) await consume({ kind: 'room', id: payload.roomEntryId });
+			}
+			submitting = false;
+			selectedAction = '';
+			await invalidateAll();
+		};
+	};
+
+	const enhanceProceed: SubmitFunction = async ({ cancel }) => {
+		if (proceedDisabled) {
+			cancel();
+			return;
+		}
+		submitting = true;
+		selectedAction = 'Proceed Deeper';
+		streamError = '';
+		return async ({ result, update }) => {
+			if (result.type !== 'success') {
+				submitting = false;
+				await update();
+				return;
+			}
+			const payload = result.data as {
+				success?: boolean;
+				turnId?: null;
+				roomEntryId?: string | null;
+			};
+			await invalidateAll();
+			if (payload.success && payload.roomEntryId) {
+				await consume({ kind: 'room', id: payload.roomEntryId });
 			}
 			submitting = false;
 			selectedAction = '';
@@ -123,6 +170,12 @@
 		return liveText[event.id] ?? (event.kind === 'room' ? event.prose : event.narration);
 	}
 
+	function resultText() {
+		return awaitingTurn
+			? (liveText[awaitingTurn.id] ?? awaitingTurn.narration)
+			: 'The result could not be loaded.';
+	}
+
 	function onTerminalScroll() {
 		stickToBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 56;
 	}
@@ -159,17 +212,17 @@
 
 {#if form?.error}<div class="alert alert-error play-alert" role="alert">{form.error}</div>{/if}
 {#if streamError}<div class="alert alert-error play-alert" role="alert">{streamError}</div>{/if}
-{#if submitting || Object.keys(activeStreams).length > 0}
-	<div class="dm-pending" role="status" aria-live="polite">
-		<span class="dm-orb" aria-hidden="true"></span>
-		<div>
-			<strong
-				>{selectedAction ? `You chose: ${selectedAction}` : 'The chronicle is unfolding...'}</strong
-			>
-			<span>The Dungeon of the Endless DM is taking its turn.</span>
+<div class:active={dmActive} class="dm-status-region" role="status" aria-live="polite">
+	{#if dmActive}
+		<div class="dm-status-toast">
+			<span class="dm-orb" aria-hidden="true"></span>
+			<div>
+				<strong>{selectedAction || 'The chronicle is unfolding...'}</strong>
+				<span>The Dungeon Master is writing.</span>
+			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
+</div>
 {#if data.status !== 'active'}
 	<div class="alert alert-info play-alert" role="status">
 		This expedition is {data.status}. Its chronicle remains available, but no further actions can be
@@ -195,19 +248,40 @@
 					style={`width:${Math.max(0, (data.character.hp / data.character.maxHp) * 100)}%`}
 				></div>
 			</div>
-			<div class="mini-stats play-stats">
-				<span><small>Body</small>{data.character.body}</span><span
-					><small>Mind</small>{data.character.mind}</span
-				><span><small>Spirit</small>{data.character.spirit}</span>
+			<div class="expedition-stat-groups" aria-label="Expedition attributes and skills">
+				{#each attributeGroups as group}
+					<div class="expedition-stat-group">
+						<StatBreakdown
+							breakdown={data.character.breakdowns.attributes[group.stat]}
+							uid={`play-${group.stat}`}
+						/>
+						<div class="expedition-skills">
+							{#each group.skills as skill}
+								<StatBreakdown
+									breakdown={data.character.breakdowns.skills[skill]}
+									uid={`play-${skill}`}
+								/>
+							{/each}
+						</div>
+					</div>
+				{/each}
 			</div>
 			<dl class="run-facts">
 				<div>
-					<dt>Defense</dt>
-					<dd>{data.character.defense}</dd>
+					<dt class="sr-only">Defense</dt>
+					<dd>
+						<StatBreakdown breakdown={data.character.breakdowns.defense} uid="play-defense" />
+					</dd>
 				</div>
 				<div>
-					<dt>Attack</dt>
-					<dd>+{data.character.attackBonus}</dd>
+					<dt class="sr-only">Attack</dt>
+					<dd>
+						<StatBreakdown
+							breakdown={data.character.breakdowns.attack}
+							uid="play-attack"
+							prefix="+"
+						/>
+					</dd>
 				</div>
 				<div>
 					<dt>Company gold</dt>
@@ -253,13 +327,10 @@
 				{roomProse}
 			</div>
 		</article>
-		{#if data.status === 'active'}
+		{#if data.status === 'active' && data.phase === 'ready'}
 			<section class="card action-card" aria-labelledby="choose-action">
 				<div class="eyebrow">Your turn</div>
 				<h2 id="choose-action">What does {data.character.name} do?</h2>
-				{#if roomPending}<p class="text-muted">
-						Actions unlock when the room finishes revealing itself.
-					</p>{/if}
 				<div class="action-grid">
 					{#each data.suggestions as suggestion, index (data.actionKeys[index])}
 						<form method="POST" action="?/act" use:enhance={enhanceAction}>
@@ -291,6 +362,74 @@
 					/>
 					<button type="submit" disabled={actionsDisabled}>Attempt</button>
 				</form>
+			</section>
+		{:else if data.status === 'active' && data.phase === 'awaiting_proceed'}
+			<section class="card resolution-card" aria-labelledby="resolution-title">
+				<div class="resolution-head">
+					<div>
+						<div class="eyebrow">Encounter resolved</div>
+						<h2 id="resolution-title">The room falls behind you</h2>
+					</div>
+					{#if awaitingTurn}
+						<span
+							class="badge {awaitingTurn.outcome.result === 'failure' ||
+							awaitingTurn.outcome.result === 'defeat'
+								? 'red'
+								: 'green'}"
+						>
+							{awaitingTurn.outcome.result}
+						</span>
+					{/if}
+				</div>
+				{#if awaitingTurn}
+					<div class="resolution-action">
+						<span>Your action</span>
+						<strong>{awaitingTurn.action}</strong>
+					</div>
+					<div
+						class:typing={activeStreams[awaitingTurn.id]}
+						class="resolution-prose"
+						aria-label="Resolved action narration"
+					>
+						{resultText()}
+					</div>
+					<div class="resolution-outcome">
+						<div>
+							<span>Outcome</span>
+							<strong>{awaitingTurn.outcome.message}</strong>
+						</div>
+						<div>
+							<span>Vitality</span>
+							<strong>
+								{awaitingTurn.outcome.hpBefore} -&gt; {awaitingTurn.outcome.hpAfter}
+								({awaitingTurn.outcome.hpDelta >= 0 ? '+' : ''}{awaitingTurn.outcome.hpDelta})
+							</strong>
+						</div>
+					</div>
+					{#if awaitingTurn.rolls.length > 0}
+						<div class="resolution-rolls" aria-label="Encounter rolls">
+							{#each awaitingTurn.rolls as roll}
+								<div class="terminal-roll {roll.success ? 'success' : 'failure'}">
+									<span>{roll.label}</span>
+									<code>
+										[{roll.dice.join(', ')}] kept {roll.selected} + {roll.modifier} = {roll.total}
+										vs {roll.target}
+									</code>
+									<b>{roll.success ? 'PASS' : 'FAIL'}</b>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					<form method="POST" action="?/proceed" class="proceed-form" use:enhance={enhanceProceed}>
+						<input type="hidden" name="expectedVersion" value={data.expectedVersion} />
+						<input type="hidden" name="commandKey" value={data.proceedKey} />
+						<button type="submit" disabled={proceedDisabled}>Proceed Deeper</button>
+					</form>
+				{:else}
+					<div class="alert alert-error" role="alert">
+						The resolved turn is unavailable. Reload before proceeding.
+					</div>
+				{/if}
 			</section>
 		{/if}
 	</main>

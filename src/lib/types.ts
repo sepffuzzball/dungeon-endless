@@ -6,6 +6,8 @@ export type Species = string;
 export type SkillName =
 	'Athletics' | 'Knowledge' | 'Magic' | 'Persuasion' | 'Stealth' | 'Willpower';
 export type RunStatus = 'active' | 'defeated' | 'abandoned';
+/** Progress gate for a run: whether the player may act or must confirm proceed first. */
+export type RunPhase = 'ready' | 'awaiting_proceed';
 export type LlmPurpose = 'prose' | 'interpretation' | 'summary' | 'suggestions';
 export type RoomType = 'monster' | 'trap' | 'treasure' | 'rest' | 'boss';
 export type ActionMethod = 'combat' | 'skill' | 'none';
@@ -87,6 +89,7 @@ export interface RunRow {
 	userId: string;
 	characterId: string;
 	status: RunStatus;
+	phase: RunPhase;
 	seed: string;
 	rulesVersion: number;
 	roomNumber: number;
@@ -134,6 +137,8 @@ export interface RunMeta {
 
 export interface RoomSnapshot {
 	type: RoomType;
+	/** Durable floor identity used to bind a turn to the room it resolved. */
+	roomNumber?: number;
 	boss?: boolean;
 	name?: string;
 	description?: string;
@@ -149,6 +154,8 @@ export interface RoomSnapshot {
 export interface RoomEntry {
 	id: string;
 	runId: string;
+	/** Optional idempotency key that later gates proceed; null for initial entries. */
+	commandKey?: string | null;
 	roomNumber: number;
 	runVersion: number;
 	roomSnapshot: RoomSnapshot;
@@ -220,6 +227,21 @@ export interface DerivedStats {
 	skillValues: Record<SkillName, number>;
 }
 
+export interface StatBreakdown {
+	label: string;
+	total: number;
+	parts: { label: string; value: number }[];
+	formula?: string;
+}
+
+export interface StatBreakdowns {
+	attributes: Record<'body' | 'mind' | 'spirit', StatBreakdown>;
+	skills: Record<SkillName, StatBreakdown>;
+	instinct: StatBreakdown;
+	defense: StatBreakdown;
+	attack: StatBreakdown;
+}
+
 export interface LlmEndpointRow {
 	id: string;
 	name: string;
@@ -244,6 +266,11 @@ export interface CharacterCard {
 	body: number;
 	mind: number;
 	spirit: number;
+	effectiveBody: number;
+	effectiveMind: number;
+	effectiveSpirit: number;
+	skillValues: Record<SkillName, number>;
+	breakdowns: StatBreakdowns;
 	imageUrl?: string | null;
 	gearBonus: number;
 	maxStartRoom: number;
@@ -298,6 +325,17 @@ export type TerminalEvent = TerminalRoomEvent | TerminalTurnEvent;
 export interface PendingNarration {
 	kind: 'turn' | 'room';
 	id: string;
+}
+
+/** The exact resolved turn held on screen until the player proceeds. */
+export interface AwaitingProceedTurn {
+	id: string;
+	sequence: number;
+	action: string;
+	narration: string;
+	status: NarrationStatus;
+	outcome: TurnOutcome;
+	rolls: RollRecord[];
 }
 
 export interface MonsterDefinition {
@@ -369,6 +407,8 @@ export interface PlayCharacter {
 	spirit: number;
 	defense: number;
 	attackBonus: number;
+	skillValues: Record<SkillName, number>;
+	breakdowns: StatBreakdowns;
 	gold: number;
 }
 
@@ -376,6 +416,7 @@ export interface PlayCharacter {
 export interface PlayView {
 	runId: string;
 	status: RunStatus;
+	phase: RunPhase;
 	room: RoomView;
 	character: PlayCharacter;
 	terminal: TerminalEvent[];
@@ -384,6 +425,8 @@ export interface PlayView {
 	expectedVersion: number;
 	actionKey: string;
 	actionKeys: string[];
+	proceedKey: string;
+	awaitingTurn: AwaitingProceedTurn | null;
 	inventory: InventoryItem[];
 	summary: string;
 	characterName: string;

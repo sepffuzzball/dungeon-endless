@@ -8,6 +8,7 @@ import { deriveStats, resolveRunBaseStats } from '$lib/server/game';
 import {
 	fallbackProse,
 	fallbackRoomEntry,
+	fallbackSummary,
 	streamProse,
 	streamRoomEntry,
 	summarizeTurn
@@ -54,6 +55,59 @@ const wait = (ms: number, signal: AbortSignal) =>
 			{ once: true }
 		);
 	});
+
+/**
+ * Atomically publishes the final turn narration, summary and terminal status under
+ * the producer's lease. Locks the owned run, then the exact turn, verifies the
+ * lease still belongs to this producer, and only then writes the durable
+ * narration, turn summary and final status, publishing run.summary only when the
+ * run still points at this turn. No LLM or network call happens inside the
+ * transaction; prose and summary must be generated beforehand.
+ */
+async function finalizeTurnNarration(input: {
+	runId: string;
+	userId: string;
+	turnId: string;
+	lease: Date;
+	status: 'complete' | 'failed';
+	narration: string;
+	summary: string;
+}): Promise<boolean> {
+	const { runId, userId, turnId, lease, status, narration, summary } = input;
+	return db.transaction(async (tx) => {
+		const [run] = await tx
+			.select()
+			.from(runs)
+			.where(and(eq(runs.id, runId), eq(runs.userId, userId)))
+			.limit(1)
+			.for('update');
+		if (!run) return false;
+		const [turn] = await tx
+			.select()
+			.from(turns)
+			.where(and(eq(turns.id, turnId), eq(turns.runId, run.id)))
+			.limit(1)
+			.for('update');
+		if (!turn) return false;
+		// The lease must still be owned by this producer, otherwise nothing is published.
+		if (turn.narrationStatus !== 'streaming' || !turn.narrationStartedAt) return false;
+		if (turn.narrationStartedAt.getTime() !== lease.getTime()) return false;
+		await tx
+			.update(turns)
+			.set({
+				narration,
+				turnSummary: summary,
+				narrationStatus: status,
+				narrationStartedAt: null,
+				narrationUpdatedAt: new Date()
+			})
+			.where(eq(turns.id, turnId));
+		if (run.version === turn.sequence) {
+			await tx.update(runs).set({ summary }).where(eq(runs.id, run.id));
+		}
+		return true;
+	});
+}
 
 export const GET: RequestHandler = async (event) => {
 	if (!event.request.headers.get('accept')?.toLowerCase().includes('text/event-stream')) {
@@ -326,6 +380,7 @@ export const GET: RequestHandler = async (event) => {
 							room: turn.roomSnapshot,
 							actionText: turn.actionText,
 							outcome: turn.outcome,
+							rolls: Array.isArray(turn.rolls) ? turn.rolls : [],
 							endpoints,
 							signal
 						})) {
@@ -342,43 +397,34 @@ export const GET: RequestHandler = async (event) => {
 							}
 							send(formatSseEvent('chunk', { text: chunk.content }));
 						}
-						const completed = await db
-							.update(turns)
-							.set({ narrationStatus: 'complete', narrationUpdatedAt: new Date() })
-							.where(and(eq(turns.id, turn.id), eq(turns.narrationStartedAt, activeLease)))
-							.returning({ id: turns.id });
-						if (!completed.length) {
-							leaseLost = true;
-							aborter.abort();
-							return;
-						}
-						producerFinished = true;
-						if (heartbeatTimer) clearInterval(heartbeatTimer);
-						void (async () => {
-							const summary = await summarizeTurn({
+						let summary = fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome);
+						try {
+							summary = await summarizeTurn({
 								system: prompt(owned.run, owned.character),
 								room: turn.roomSnapshot,
 								actionText: turn.actionText,
 								outcome: turn.outcome,
 								endpoints
 							});
-							await Promise.all([
-								db
-									.update(turns)
-									.set({ turnSummary: summary })
-									.where(and(eq(turns.id, turn.id), eq(turns.narrationStartedAt, activeLease))),
-								db
-									.update(runs)
-									.set({ summary })
-									.where(
-										and(
-											eq(runs.id, owned.run.id),
-											eq(runs.userId, user.id),
-											eq(runs.version, turn.sequence)
-										)
-									)
-							]);
-						})().catch(() => undefined);
+						} catch {
+							// The deterministic summary remains authoritative when every endpoint fails.
+						}
+						const won = await finalizeTurnNarration({
+							runId: owned.run.id,
+							userId: user.id,
+							turnId: turn.id,
+							lease: activeLease,
+							status: 'complete',
+							narration: accumulated,
+							summary
+						});
+						if (!won) {
+							leaseLost = true;
+							aborter.abort();
+							return;
+						}
+						producerFinished = true;
+						if (heartbeatTimer) clearInterval(heartbeatTimer);
 					} else {
 						const [current] = await db
 							.select({ run: runs, character: characters, entry: roomEntries })
@@ -399,7 +445,7 @@ export const GET: RequestHandler = async (event) => {
 							entry.roomNumber !== run.roomNumber ||
 							entry.roomSnapshot.type !== run.roomType
 						) {
-							accumulated ||= fallbackRoomEntry(entry.roomSnapshot, '');
+							accumulated ||= fallbackRoomEntry(entry.roomSnapshot, run.summary);
 							const saved = await db
 								.update(roomEntries)
 								.set({ prose: accumulated, status: 'failed', updatedAt: new Date() })
@@ -473,45 +519,50 @@ export const GET: RequestHandler = async (event) => {
 						await releaseLease();
 						return;
 					}
-					const fallback =
-						kind === 'turn'
-							? await (async () => {
-									const [turn] = await db
-										.select()
-										.from(turns)
-										.where(eq(turns.id, targetId))
-										.limit(1);
-									return turn
-										? fallbackProse(turn.roomSnapshot, turn.actionText, turn.outcome)
-										: 'The dungeon falls silent.';
-								})()
-							: await (async () => {
-									const [entry] = await db
-										.select()
-										.from(roomEntries)
-										.where(eq(roomEntries.id, targetId))
-										.limit(1);
-									return entry
-										? fallbackRoomEntry(entry.roomSnapshot, '')
-										: 'The chamber waits in silence.';
-								})();
-					accumulated ||= fallback;
-					const saved =
-						kind === 'turn'
-							? await db
-									.update(turns)
-									.set({
-										narration: accumulated,
-										narrationStatus: 'failed',
-										narrationUpdatedAt: new Date()
-									})
-									.where(and(eq(turns.id, targetId), eq(turns.narrationStartedAt, activeLease)))
-									.returning({ id: turns.id })
-							: await db
-									.update(roomEntries)
-									.set({ prose: accumulated, status: 'failed', updatedAt: new Date() })
-									.where(and(eq(roomEntries.id, targetId), eq(roomEntries.startedAt, activeLease)))
-									.returning({ id: roomEntries.id });
+					let saved: { id: string }[];
+					if (kind === 'turn') {
+						const [turn] = await db
+							.select()
+							.from(turns)
+							.where(and(eq(turns.id, targetId), eq(turns.runId, owned.run.id)))
+							.limit(1);
+						const summary = turn
+							? fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome)
+							: 'The dungeon falls silent.';
+						accumulated ||= turn
+							? fallbackProse(
+									turn.roomSnapshot,
+									turn.actionText,
+									turn.outcome,
+									Array.isArray(turn.rolls) ? turn.rolls : []
+								)
+							: 'The dungeon falls silent.';
+						const won = await finalizeTurnNarration({
+							runId: owned.run.id,
+							userId: user.id,
+							turnId: targetId,
+							lease: activeLease,
+							status: 'failed',
+							narration: accumulated,
+							summary
+						});
+						if (!won) return;
+						saved = [{ id: targetId }];
+					} else {
+						const [entry] = await db
+							.select()
+							.from(roomEntries)
+							.where(and(eq(roomEntries.id, targetId), eq(roomEntries.runId, owned.run.id)))
+							.limit(1);
+						accumulated ||= entry
+							? fallbackRoomEntry(entry.roomSnapshot, owned.run.summary)
+							: 'The chamber waits in silence.';
+						saved = await db
+							.update(roomEntries)
+							.set({ prose: accumulated, status: 'failed', updatedAt: new Date() })
+							.where(and(eq(roomEntries.id, targetId), eq(roomEntries.startedAt, activeLease)))
+							.returning({ id: roomEntries.id });
+					}
 					if (!saved.length) return;
 					producerFinished = true;
 					send(formatSseEvent('snapshot', { text: accumulated }));

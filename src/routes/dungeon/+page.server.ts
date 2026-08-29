@@ -139,7 +139,7 @@ export const actions: Actions = {
 					monsters: monsterRows,
 					traps: trapRows
 				});
-				const roomData = { ...generated, run: meta };
+				const roomData = { ...generated, roomNumber: startRoom, run: meta };
 				const maxHp = 5 + character.body;
 				const [run] = await tx
 					.insert(runs)
@@ -147,6 +147,7 @@ export const actions: Actions = {
 						userId: user.id,
 						characterId: character.id,
 						status: 'active',
+						phase: 'ready',
 						seed,
 						rulesVersion: 2,
 						roomNumber: startRoom,

@@ -75,9 +75,9 @@
 						<small>{character.species} {character.className} / Level {character.level}</small>
 					</div>
 					<div class="mini-stats">
-						<span><small>Body</small>{character.body}</span><span
-							><small>Mind</small>{character.mind}</span
-						><span><small>Spirit</small>{character.spirit}</span>
+						<span><small>Body</small>{character.effectiveBody}</span><span
+							><small>Mind</small>{character.effectiveMind}</span
+						><span><small>Spirit</small>{character.effectiveSpirit}</span>
 					</div>
 				</article>
 			{/each}

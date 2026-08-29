@@ -5,6 +5,7 @@ import {
 	MAX_COMPANY_GOLD,
 	TRAP_DC_BASE,
 	checkedCompanyGoldAdd,
+	deriveStatBreakdowns,
 	deriveStats,
 	canIncreaseStat,
 	gearUpgradeCost,
@@ -165,6 +166,93 @@ describe('deriveStats', () => {
 		expect(stats.attackBonus).toBe(2);
 		expect(stats.defense).toBe(11);
 		expect(stats.skillValues.Magic).toBe(4);
+	});
+});
+
+describe('deriveStatBreakdowns', () => {
+	const input = (inventory: InventoryItem[] = [], gearCap?: number) => ({
+		body: 2,
+		mind: 3,
+		spirit: 1,
+		level: 4,
+		hp: 8,
+		maxHp: 10,
+		defense: 9,
+		attackBonus: 6,
+		inventory,
+		gearCap
+	});
+
+	function expectTotalsMatch(source: ReturnType<typeof input>) {
+		const stats = deriveStats(source);
+		const breakdowns = deriveStatBreakdowns(source);
+		const sum = (parts: { value: number }[]) =>
+			parts.reduce((total, part) => total + part.value, 0);
+
+		expect(breakdowns.attributes.body.total).toBe(stats.body);
+		expect(breakdowns.attributes.mind.total).toBe(stats.mind);
+		expect(breakdowns.attributes.spirit.total).toBe(stats.spirit);
+		expect(breakdowns.instinct.total).toBe(stats.instinct);
+		expect(breakdowns.attack.total).toBe(stats.attackBonus);
+		expect(breakdowns.defense.total).toBe(stats.defense);
+		for (const breakdown of [
+			...Object.values(breakdowns.attributes),
+			...Object.values(breakdowns.skills),
+			breakdowns.instinct,
+			breakdowns.attack,
+			breakdowns.defense
+		]) {
+			expect(sum(breakdown.parts)).toBe(breakdown.total);
+		}
+	}
+
+	it('matches every derived total with no gear', () => {
+		const source = input();
+		expectTotalsMatch(source);
+		const breakdowns = deriveStatBreakdowns(source);
+		expect(breakdowns.attributes.body.parts.map((part) => part.value)).toEqual([2, 0, 0]);
+		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 4, 0]);
+		expect(breakdowns.attack.parts.map((part) => part.value)).toEqual([2, 4, 0]);
+	});
+
+	it('aggregates general, attribute, skill, attack and defense gear in authoritative parts', () => {
+		const source = input([
+			{ kind: 'magic', name: 'General one', stat: 'general' },
+			{ kind: 'magic', name: 'General two', stat: 'general' },
+			{ kind: 'magic', name: 'Body item', stat: 'body' },
+			{ kind: 'magic', name: 'Skill one', stat: 'skill', skill: 'Athletics' },
+			{ kind: 'magic', name: 'Skill two', stat: 'skill', skill: 'Athletics' },
+			{ kind: 'magic', name: 'Weapon', stat: 'attack' },
+			{ kind: 'magic', name: 'Armor', stat: 'defense' }
+		]);
+		expectTotalsMatch(source);
+		const breakdowns = deriveStatBreakdowns(source);
+		expect(breakdowns.attributes.body.parts.map((part) => part.value)).toEqual([2, 2, 1]);
+		expect(breakdowns.skills.Athletics.parts.map((part) => part.value)).toEqual([5, 2]);
+		expect(breakdowns.attack.parts.map((part) => part.value)).toEqual([2, 4, 1]);
+		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 4, 1]);
+		// General and Body gear improve skills through effective Body, never authoritative Attack.
+		expect(breakdowns.attack.total).toBe(7);
+	});
+
+	it('accounts explicitly for primary equipment discarded by the cap', () => {
+		const source = input(
+			[
+				{ kind: 'magic', name: 'General', stat: 'general' },
+				{ kind: 'magic', name: 'Body one', stat: 'body' },
+				{ kind: 'magic', name: 'Body two', stat: 'body' }
+			],
+			2
+		);
+		expectTotalsMatch(source);
+		const body = deriveStatBreakdowns(source).attributes.body;
+		expect(body.total).toBe(4);
+		expect(body.parts).toEqual([
+			{ label: 'Body base', value: 2 },
+			{ label: 'General equipment', value: 1 },
+			{ label: 'Body equipment', value: 2 },
+			{ label: 'Gear cap (2)', value: -1 }
+		]);
 	});
 });
 

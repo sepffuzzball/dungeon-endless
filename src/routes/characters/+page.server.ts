@@ -7,8 +7,11 @@ import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import {
 	canIncreaseStat,
+	deriveStatBreakdowns,
+	deriveStats,
 	gearUpgradeCost,
 	levelUpgradeCost,
+	provisionPersistentGear,
 	type PrimaryStat
 } from '$lib/server/game';
 import { characters, runs, users } from '$lib/server/schema';
@@ -33,22 +36,41 @@ export const load: PageServerLoad = async (event) => {
 		db.select({ companyGold: users.companyGold }).from(users).where(eq(users.id, user.id)).limit(1)
 	]);
 	const activeRunByCharacter = new Map(activeRows.map((run) => [run.characterId, run.id]));
-	const cards: CharacterCard[] = characterRows.map((character) => ({
-		id: character.id,
-		name: character.name,
-		title: character.title,
-		species: character.species,
-		className: character.className,
-		level: character.level,
-		body: character.body,
-		mind: character.mind,
-		spirit: character.spirit,
-		imageUrl: character.imageUrl,
-		gearBonus: character.gearBonus,
-		maxStartRoom: character.maxStartRoom,
-		furthestDepth: character.furthestFloor,
-		activeRunId: activeRunByCharacter.get(character.id)
-	}));
+	const cards: CharacterCard[] = characterRows.map((character) => {
+		const input = {
+			body: character.body,
+			mind: character.mind,
+			spirit: character.spirit,
+			level: character.level,
+			hp: 0,
+			maxHp: 0,
+			defense: 5 + character.level,
+			attackBonus: character.body + character.level,
+			inventory: provisionPersistentGear(character.gearBonus)
+		};
+		const stats = deriveStats(input);
+		return {
+			id: character.id,
+			name: character.name,
+			title: character.title,
+			species: character.species,
+			className: character.className,
+			level: character.level,
+			body: character.body,
+			mind: character.mind,
+			spirit: character.spirit,
+			effectiveBody: stats.body,
+			effectiveMind: stats.mind,
+			effectiveSpirit: stats.spirit,
+			skillValues: stats.skillValues,
+			breakdowns: deriveStatBreakdowns(input),
+			imageUrl: character.imageUrl,
+			gearBonus: character.gearBonus,
+			maxStartRoom: character.maxStartRoom,
+			furthestDepth: character.furthestFloor,
+			activeRunId: activeRunByCharacter.get(character.id)
+		};
+	});
 	return {
 		characters: cards,
 		companyName: user.companyName || 'The Endless Company',

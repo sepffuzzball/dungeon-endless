@@ -26,6 +26,7 @@ import {
 
 export const roleEnum = pgEnum('user_role', ['user', 'editor', 'admin']);
 export const runStatusEnum = pgEnum('run_status', ['active', 'defeated', 'abandoned']);
+export const runPhaseEnum = pgEnum('run_phase', ['ready', 'awaiting_proceed']);
 export const roomTypeEnum = pgEnum('room_type', ['monster', 'trap', 'treasure', 'rest', 'boss']);
 export const llmPurposeEnum = pgEnum('llm_purpose', [
 	'prose',
@@ -219,6 +220,7 @@ export const runs = pgTable(
 			.notNull()
 			.references(() => characters.id, { onDelete: 'cascade' }),
 		status: runStatusEnum('status').notNull().default('active'),
+		phase: runPhaseEnum('phase').notNull().default('ready'),
 		seed: text('seed').notNull(),
 		rulesVersion: integer('rules_version').notNull().default(1),
 		roomNumber: integer('room_number').notNull().default(1),
@@ -291,6 +293,8 @@ export const roomEntries = pgTable(
 		runId: uuid('run_id')
 			.notNull()
 			.references(() => runs.id, { onDelete: 'cascade' }),
+		/** Idempotency key bound later to roomEntries.runVersion; null for initial entries. */
+		commandKey: uuid('command_key'),
 		roomNumber: integer('room_number').notNull(),
 		runVersion: integer('run_version').notNull(),
 		roomSnapshot: jsonb('room_snapshot').$type<RoomSnapshot>().notNull(),
@@ -303,6 +307,7 @@ export const roomEntries = pgTable(
 	(table) => [
 		index('room_entries_run_id_idx').on(table.runId),
 		uniqueIndex('room_entries_run_id_room_number_unique').on(table.runId, table.roomNumber),
+		uniqueIndex('room_entries_run_id_command_key_unique').on(table.runId, table.commandKey),
 		check('room_entries_room_number_positive', sql`room_number > 0`),
 		check('room_entries_run_version_nonnegative', sql`run_version >= 0`)
 	]

@@ -1,11 +1,32 @@
 export type Role = 'user' | 'editor' | 'admin';
-export type Species = 'Wolfen' | 'Foxen' | 'Gnoll' | 'Human' | 'Elf' | 'Dwarf';
+/** Seeded species names remain available for callers, while editor-defined names stay valid. */
+export const SEEDED_SPECIES = ['Wolfen', 'Foxen', 'Gnoll', 'Human', 'Elf', 'Dwarf'] as const;
+export type SeededSpecies = (typeof SEEDED_SPECIES)[number];
+export type Species = string;
 export type SkillName =
 	'Athletics' | 'Knowledge' | 'Magic' | 'Persuasion' | 'Stealth' | 'Willpower';
 export type RunStatus = 'active' | 'defeated' | 'abandoned';
 export type LlmPurpose = 'prose' | 'interpretation' | 'summary' | 'suggestions';
 export type RoomType = 'monster' | 'trap' | 'treasure' | 'rest' | 'boss';
 export type ActionMethod = 'combat' | 'skill' | 'none';
+export type NarrationStatus = 'pending' | 'streaming' | 'complete' | 'failed';
+
+/** Editor-managed body build choices offered during character creation. */
+export const BUILD_OPTIONS = [
+	'Lean',
+	'Sturdy',
+	'Broad',
+	'Lithe',
+	'Thin',
+	'Sickly',
+	'Chubby',
+	'Girly'
+] as const;
+export type BuildOption = (typeof BUILD_OPTIONS)[number];
+
+/** Editor-managed height choices offered during character creation. */
+export const HEIGHT_OPTIONS = ['Tiny', 'Short', 'Average', 'Tall', 'Gigantic'] as const;
+export type HeightOption = (typeof HEIGHT_OPTIONS)[number];
 
 export const SKILLS: SkillName[] = [
 	'Athletics',
@@ -19,6 +40,8 @@ export const SKILLS: SkillName[] = [
 export interface SafeUser {
 	id: string;
 	username: string;
+	/** Older page/test fixtures may omit this; persisted users always receive the database default. */
+	companyName?: string;
 	role: Role;
 	mustChangePassword: boolean;
 	createdAt: string;
@@ -35,6 +58,7 @@ export interface CharacterRow {
 	userId: string;
 	name: string;
 	title: string;
+	description: string;
 	age: number;
 	height: string;
 	build: string;
@@ -67,6 +91,7 @@ export interface RunRow {
 	summary: string;
 	roomType: string;
 	roomData: RoomSnapshot;
+	meta: Partial<RunMeta>;
 	inventory: InventoryItem[];
 	startedAt: Date;
 	finishedAt: Date | null;
@@ -83,6 +108,9 @@ export interface TurnRow {
 	rolls: RollRecord[];
 	outcome: TurnOutcome;
 	narration: string;
+	narrationStatus: NarrationStatus;
+	narrationStartedAt: Date | null;
+	narrationUpdatedAt: Date | null;
 	turnSummary: string;
 	createdAt: Date;
 }
@@ -91,6 +119,10 @@ export interface RunMeta {
 	startRoom: number;
 	startLevel: number;
 	gearBonus: number;
+	/** Authoritative per-run stat allocation chosen at charter time. */
+	allocatedBody: number;
+	allocatedMind: number;
+	allocatedSpirit: number;
 }
 
 export interface RoomSnapshot {
@@ -102,7 +134,22 @@ export interface RoomSnapshot {
 	dc?: number;
 	skill?: SkillName;
 	rewards?: InventoryItem[];
-	run?: RunMeta;
+	/** Legacy snapshots can contain only the original run metadata fields. */
+	run?: Partial<RunMeta>;
+}
+
+/** Durable per-room narration state keyed by (runId, roomNumber). */
+export interface RoomEntry {
+	id: string;
+	runId: string;
+	roomNumber: number;
+	runVersion: number;
+	roomSnapshot: RoomSnapshot;
+	prose: string;
+	status: NarrationStatus;
+	startedAt: string | null;
+	updatedAt: string | null;
+	createdAt: string;
 }
 
 export type MagicStat = 'attack' | 'defense' | 'body' | 'mind' | 'spirit' | 'skill' | 'general';
@@ -208,15 +255,38 @@ export interface RoomView {
 	kind: RoomType;
 	prose: string;
 	exits: string[];
+	entryId: string | null;
+	entryStatus: NarrationStatus | null;
 }
 
-export interface TurnLogEntry {
+export interface TerminalRoomEvent {
+	kind: 'room';
 	id: string;
+	timestamp: string;
+	roomNumber: number;
+	title: string;
+	roomKind: RoomType;
+	prose: string;
+	status: NarrationStatus;
+}
+
+export interface TerminalTurnEvent {
+	kind: 'turn';
+	id: string;
+	timestamp: string;
 	turn: number;
-	actor: 'adventurer' | 'dungeon';
 	action: string;
 	narration: string;
-	roll?: RollRecord;
+	status: NarrationStatus;
+	outcome: TurnOutcome;
+	rolls: RollRecord[];
+}
+
+export type TerminalEvent = TerminalRoomEvent | TerminalTurnEvent;
+
+export interface PendingNarration {
+	kind: 'turn' | 'room';
+	id: string;
 }
 
 export interface MonsterDefinition {
@@ -297,7 +367,8 @@ export interface PlayView {
 	status: RunStatus;
 	room: RoomView;
 	character: PlayCharacter;
-	turns: TurnLogEntry[];
+	terminal: TerminalEvent[];
+	pendingNarrations: PendingNarration[];
 	suggestions: SuggestedAction[];
 	expectedVersion: number;
 	actionKey: string;

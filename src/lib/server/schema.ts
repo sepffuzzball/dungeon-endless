@@ -13,7 +13,15 @@ import {
 	uniqueIndex,
 	uuid
 } from 'drizzle-orm/pg-core';
-import type { InventoryItem, RoomSnapshot, RollRecord, TurnIntent, TurnOutcome } from '$lib/types';
+import type {
+	InventoryItem,
+	RoomSnapshot,
+	RollRecord,
+	RunMeta,
+	TurnIntent,
+	TurnOutcome
+} from '$lib/types';
+import { SEEDED_SPECIES } from '$lib/types';
 
 export const roleEnum = pgEnum('user_role', ['user', 'editor', 'admin']);
 export const runStatusEnum = pgEnum('run_status', ['active', 'defeated', 'abandoned']);
@@ -24,7 +32,14 @@ export const llmPurposeEnum = pgEnum('llm_purpose', [
 	'summary',
 	'suggestions'
 ]);
-export const speciesEnum = pgEnum('species', ['Wolfen', 'Foxen', 'Gnoll', 'Human', 'Elf', 'Dwarf']);
+/** Compatibility export for existing selectors; character snapshots themselves use unrestricted text. */
+export const speciesEnum = { enumValues: [...SEEDED_SPECIES] as readonly string[] };
+export const narrationStatusEnum = pgEnum('narration_status', [
+	'pending',
+	'streaming',
+	'complete',
+	'failed'
+]);
 export const skillEnum = pgEnum('skill', [
 	'Athletics',
 	'Knowledge',
@@ -39,6 +54,7 @@ export const users = pgTable(
 	{
 		id: uuid('id').primaryKey().defaultRandom(),
 		username: text('username').notNull(),
+		companyName: text('company_name').notNull().default('The Endless Company'),
 		passwordHash: text('password_hash').notNull(),
 		role: roleEnum('role').notNull().default('user'),
 		disabled: boolean('disabled').notNull().default(false),
@@ -78,10 +94,11 @@ export const characters = pgTable(
 			.references(() => users.id, { onDelete: 'cascade' }),
 		name: text('name').notNull(),
 		title: text('title').notNull().default(''),
+		description: text('description').notNull().default(''),
 		age: integer('age').notNull(),
 		height: text('height').notNull().default(''),
 		build: text('build').notNull().default(''),
-		species: speciesEnum('species').notNull(),
+		species: text('species').notNull(),
 		className: text('class_name').notNull(),
 		level: integer('level').notNull().default(1),
 		body: integer('body').notNull(),
@@ -123,6 +140,46 @@ export const traps = pgTable('traps', {
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 });
 
+/* ------------------------------------------------------------------ *
+ * Editor-managed species and calling definitions
+ * ------------------------------------------------------------------ */
+
+export const speciesDefinitions = pgTable(
+	'species_definitions',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		name: text('name').notNull(),
+		nameNormalized: text('name_normalized').notNull(),
+		description: text('description').notNull().default(''),
+		enabled: boolean('enabled').notNull().default(true),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [
+		uniqueIndex('species_definitions_name_normalized_unique').on(table.nameNormalized),
+		index('species_definitions_enabled_idx').on(table.enabled),
+		check('species_definitions_name_normalized_check', sql`name_normalized = lower(name)`)
+	]
+);
+
+export const callingDefinitions = pgTable(
+	'calling_definitions',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		name: text('name').notNull(),
+		nameNormalized: text('name_normalized').notNull(),
+		description: text('description').notNull().default(''),
+		enabled: boolean('enabled').notNull().default(true),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [
+		uniqueIndex('calling_definitions_name_normalized_unique').on(table.nameNormalized),
+		index('calling_definitions_enabled_idx').on(table.enabled),
+		check('calling_definitions_name_normalized_check', sql`name_normalized = lower(name)`)
+	]
+);
+
 export const runs = pgTable(
 	'runs',
 	{
@@ -145,6 +202,10 @@ export const runs = pgTable(
 		summary: text('summary').notNull().default(''),
 		roomType: roomTypeEnum('room_type').notNull().default('treasure'),
 		roomData: jsonb('room_data').$type<RoomSnapshot>().notNull(),
+		meta: jsonb('meta')
+			.$type<Partial<RunMeta>>()
+			.notNull()
+			.default(sql`'{}'::jsonb`),
 		inventory: jsonb('inventory')
 			.$type<InventoryItem[]>()
 			.notNull()
@@ -179,6 +240,9 @@ export const turns = pgTable(
 			.default(sql`'[]'::jsonb`),
 		outcome: jsonb('outcome').$type<TurnOutcome>().notNull(),
 		narration: text('narration').notNull().default(''),
+		narrationStatus: narrationStatusEnum('narration_status').notNull().default('complete'),
+		narrationStartedAt: timestamp('narration_started_at', { withTimezone: true }),
+		narrationUpdatedAt: timestamp('narration_updated_at', { withTimezone: true }),
 		turnSummary: text('turn_summary').notNull().default(''),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 	},
@@ -189,6 +253,30 @@ export const turns = pgTable(
 			table.sequence,
 			table.actionKey
 		)
+	]
+);
+
+export const roomEntries = pgTable(
+	'room_entries',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		runId: uuid('run_id')
+			.notNull()
+			.references(() => runs.id, { onDelete: 'cascade' }),
+		roomNumber: integer('room_number').notNull(),
+		runVersion: integer('run_version').notNull(),
+		roomSnapshot: jsonb('room_snapshot').$type<RoomSnapshot>().notNull(),
+		prose: text('prose').notNull().default(''),
+		status: narrationStatusEnum('status').notNull().default('pending'),
+		startedAt: timestamp('started_at', { withTimezone: true }),
+		updatedAt: timestamp('updated_at', { withTimezone: true }),
+		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+	},
+	(table) => [
+		index('room_entries_run_id_idx').on(table.runId),
+		uniqueIndex('room_entries_run_id_room_number_unique').on(table.runId, table.roomNumber),
+		check('room_entries_room_number_positive', sql`room_number > 0`),
+		check('room_entries_run_version_nonnegative', sql`run_version >= 0`)
 	]
 );
 
@@ -238,8 +326,11 @@ export type SessionInsert = typeof sessions.$inferSelect;
 export type Character = typeof characters.$inferSelect;
 export type Monster = typeof monsters.$inferSelect;
 export type Trap = typeof traps.$inferSelect;
+export type SpeciesDefinition = typeof speciesDefinitions.$inferSelect;
+export type CallingDefinition = typeof callingDefinitions.$inferSelect;
 export type Run = typeof runs.$inferSelect;
 export type Turn = typeof turns.$inferSelect;
+export type RoomEntry = typeof roomEntries.$inferSelect;
 export type LlmEndpoint = typeof llmEndpoints.$inferSelect;
 export type Achievement = typeof achievements.$inferSelect;
 export type UserAchievement = typeof userAchievements.$inferSelect;

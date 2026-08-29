@@ -1,16 +1,18 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fail, redirect } from '@sveltejs/kit';
-import type { InventoryItem, CharacterCard } from '$lib/types';
+import { z } from 'zod';
+import type { InventoryItem, CharacterCard, RunMeta } from '$lib/types';
 import { achievementByKey } from '$lib/server/achievements';
 import { requireUser } from '$lib/server/authorization';
 import { randomUrlToken } from '$lib/server/crypto';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
-import { generateRoom } from '$lib/server/game';
+import { generateRoom, validateStatAllocation } from '$lib/server/game';
 import {
 	achievements,
 	characters,
 	monsters,
+	roomEntries,
 	runs,
 	traps,
 	userAchievements
@@ -18,6 +20,7 @@ import {
 import type { Actions, PageServerLoad } from './$types';
 
 const GEAR_COSTS = [0, 25, 75, 225] as const;
+const uuidSchema = z.string().uuid();
 type RunStartResult = { runId: string } | { error: string; status: number };
 
 function formInteger(form: FormData, name: string): number | null {
@@ -60,7 +63,7 @@ export const load: PageServerLoad = async (event) => {
 		activeRunId: activeRunByCharacter.get(character.id)
 	}));
 
-	return { characters: characterCards };
+	return { characters: characterCards, companyName: user.companyName || 'The Endless Company' };
 };
 
 export const actions: Actions = {
@@ -68,14 +71,17 @@ export const actions: Actions = {
 		assertSameOrigin(event);
 		const user = requireUser(event);
 		const form = await event.request.formData();
-		const characterId = form.get('characterId');
+		const characterId = uuidSchema.safeParse(form.get('characterId'));
 		const brutality = formInteger(form, 'brutality');
 		const debauchery = formInteger(form, 'debauchery');
 		const startRoom = formInteger(form, 'startRoom');
 		const level = formInteger(form, 'level');
 		const gear = formInteger(form, 'gear');
+		const allocatedBody = formInteger(form, 'body');
+		const allocatedMind = formInteger(form, 'mind');
+		const allocatedSpirit = formInteger(form, 'spirit');
 
-		if (typeof characterId !== 'string' || characterId.length === 0) {
+		if (!characterId.success) {
 			return fail(400, { error: 'Choose a hero before starting a run.' });
 		}
 		if (brutality === null || brutality < 1 || brutality > 5) {
@@ -93,6 +99,18 @@ export const actions: Actions = {
 		if (gear === null || gear < 0 || gear > 3) {
 			return fail(400, { error: 'Provisioned gear must be between 0 and 3.' });
 		}
+		if (
+			level === null ||
+			allocatedBody === null ||
+			allocatedMind === null ||
+			allocatedSpirit === null ||
+			!validateStatAllocation(level, allocatedBody, allocatedMind, allocatedSpirit)
+		) {
+			return fail(400, {
+				error:
+					'Allocate exactly one point per run level. Stats are capped at 3, except level 10 permits one stat at 4.'
+			});
+		}
 
 		const skipCost = 5 * (startRoom - 1);
 		const levelCost = level === 1 ? 0 : 20 + (level - 2) * 10;
@@ -103,7 +121,7 @@ export const actions: Actions = {
 				const [character] = await tx
 					.select()
 					.from(characters)
-					.where(and(eq(characters.id, characterId), eq(characters.userId, user.id)))
+					.where(and(eq(characters.id, characterId.data), eq(characters.userId, user.id)))
 					.limit(1)
 					.for('update');
 
@@ -146,11 +164,19 @@ export const actions: Actions = {
 					monsters: monsterRows,
 					traps: trapRows
 				});
+				const meta: RunMeta = {
+					startRoom,
+					startLevel: level,
+					gearBonus: gear,
+					allocatedBody,
+					allocatedMind,
+					allocatedSpirit
+				};
 				const roomData = {
 					...room,
-					run: { startRoom, startLevel: level, gearBonus: gear }
+					run: meta
 				};
-				const maxHp = 5 + character.body;
+				const maxHp = 5 + allocatedBody;
 
 				await tx
 					.update(characters)
@@ -177,9 +203,18 @@ export const actions: Actions = {
 						debauchery,
 						roomType: room.type,
 						roomData,
+						meta,
 						inventory: provisionedGear(gear)
 					})
 					.returning({ id: runs.id });
+
+				await tx.insert(roomEntries).values({
+					runId: run.id,
+					roomNumber: startRoom,
+					runVersion: 0,
+					roomSnapshot: roomData,
+					status: 'pending'
+				});
 
 				for (const key of startRoom >= 10 ? ['first-entry', 'double-digits'] : ['first-entry']) {
 					const definition = achievementByKey(key);

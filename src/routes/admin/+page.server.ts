@@ -204,6 +204,59 @@ export const actions: Actions = {
 			return databaseFailure();
 		}
 	},
+	'edit-endpoint': async (event) => {
+		authorizeAction(event);
+		const form = await event.request.formData();
+		const id = idSchema.safeParse(form.get('id'));
+		const name = String(form.get('name') ?? '').trim();
+		const model = String(form.get('model') ?? '').trim();
+		const purpose = purposeSchema.safeParse(form.get('purpose'));
+		const timeoutMs = Number(form.get('timeoutMs'));
+		const apiKey = String(form.get('apiKey') ?? '').trim();
+		const clearApiKey = form.get('clearApiKey') === 'on';
+		if (!id.success) return fail(400, { error: 'Invalid endpoint selection.' });
+		if (!name || name.length > 120 || !model || model.length > 200 || !purpose.success) {
+			return fail(400, { error: 'Enter a valid endpoint name, purpose, and model.' });
+		}
+		if (!Number.isInteger(timeoutMs) || timeoutMs < MIN_TIMEOUT_MS || timeoutMs > MAX_TIMEOUT_MS) {
+			return fail(400, { error: `Timeout must be ${MIN_TIMEOUT_MS} to ${MAX_TIMEOUT_MS} ms.` });
+		}
+		if (clearApiKey && apiKey) {
+			return fail(400, { error: 'Choose either a replacement API key or clear the stored key.' });
+		}
+		let baseUrl: string;
+		try {
+			baseUrl = validateLlmUrl(String(form.get('baseUrl') ?? '')).toString();
+		} catch (error) {
+			return fail(400, {
+				error: error instanceof Error ? error.message : 'Endpoint URL is not permitted.'
+			});
+		}
+		try {
+			const values: typeof llmEndpoints.$inferInsert = {
+				name,
+				purpose: purpose.data,
+				baseUrl,
+				model,
+				timeoutMs,
+				enabled: form.get('enabled') === 'on',
+				updatedAt: new Date()
+			};
+			if (clearApiKey) values.apiKeyEnc = null;
+			else if (apiKey) values.apiKeyEnc = encryptEndpointKey(apiKey);
+			const rows = await db
+				.update(llmEndpoints)
+				.set(values)
+				.where(eq(llmEndpoints.id, id.data))
+				.returning({ id: llmEndpoints.id });
+			if (!rows.length) return fail(404, { error: 'Endpoint not found.' });
+			return { success: 'Endpoint updated.' };
+		} catch (error) {
+			if (isUniqueViolation(error))
+				return fail(409, { error: 'An endpoint with those details already exists.' });
+			return databaseFailure();
+		}
+	},
 	'toggle-endpoint': async (event) => {
 		authorizeAction(event);
 		const form = await event.request.formData();

@@ -4,6 +4,7 @@ import {
 	type InventoryItem,
 	type MonsterDefinition,
 	type RoomSnapshot,
+	type RunMeta,
 	type SkillName,
 	type TrapDefinition,
 	type TurnIntent,
@@ -31,6 +32,71 @@ export const SKILL_PRIMARY: Record<SkillName, PrimaryStat> = {
 
 export function skillPrimary(skill: SkillName): PrimaryStat {
 	return SKILL_PRIMARY[skill];
+}
+
+/* ------------------------------------------------------------------ *
+ * Per-run stat allocation
+ * ------------------------------------------------------------------ */
+
+/**
+ * Validates an authoritative stat allocation for a run starting at `level`.
+ * The three stats are integers, each non-negative, must sum to exactly the
+ * level, and each may not exceed 3 for levels 1-9. At level 10 at most one
+ * stat may equal 4 and none may exceed 4.
+ */
+export function validateStatAllocation(
+	level: number,
+	body: number,
+	mind: number,
+	spirit: number
+): boolean {
+	if (!Number.isInteger(level) || level < 1 || level > 10) return false;
+	if (![body, mind, spirit].every((stat) => Number.isInteger(stat) && stat >= 0)) return false;
+	if (body + mind + spirit !== level) return false;
+	if (level <= 9) {
+		return body <= 3 && mind <= 3 && spirit <= 3;
+	}
+	const atFour = [body, mind, spirit].filter((stat) => stat === 4).length;
+	return atFour <= 1 && body <= 4 && mind <= 4 && spirit <= 4;
+}
+
+/** A new run must persist complete, internally consistent metadata. */
+export function isValidNewRunMeta(meta: Partial<RunMeta>): meta is RunMeta {
+	return (
+		Number.isInteger(meta.startRoom) &&
+		(meta.startRoom ?? 0) >= 1 &&
+		Number.isInteger(meta.startLevel) &&
+		Number.isInteger(meta.gearBonus) &&
+		(meta.gearBonus ?? -1) >= 0 &&
+		(meta.gearBonus ?? 4) <= 3 &&
+		meta.allocatedBody !== undefined &&
+		meta.allocatedMind !== undefined &&
+		meta.allocatedSpirit !== undefined &&
+		validateStatAllocation(
+			meta.startLevel as number,
+			meta.allocatedBody,
+			meta.allocatedMind,
+			meta.allocatedSpirit
+		)
+	);
+}
+
+/** Resolved base stats for a run: the meta allocation when valid, else legacy character stats. */
+export function resolveRunBaseStats(
+	runMeta: Partial<RunMeta> | undefined,
+	legacy: { body: number; mind: number; spirit: number }
+): { body: number; mind: number; spirit: number } {
+	const { allocatedBody, allocatedMind, allocatedSpirit, startLevel } = runMeta ?? {};
+	if (
+		allocatedBody !== undefined &&
+		allocatedMind !== undefined &&
+		allocatedSpirit !== undefined &&
+		typeof startLevel === 'number' &&
+		validateStatAllocation(startLevel, allocatedBody, allocatedMind, allocatedSpirit)
+	) {
+		return { body: allocatedBody, mind: allocatedMind, spirit: allocatedSpirit };
+	}
+	return { body: legacy.body, mind: legacy.mind, spirit: legacy.spirit };
 }
 
 /* ------------------------------------------------------------------ *
@@ -294,6 +360,27 @@ function selectTrap(rng: Rng, traps: readonly TrapDefinition[]): TrapDefinition 
 	return rng.pick(pool);
 }
 
+/**
+ * Composes the description snapshot for a monster (or boss) room. When the
+ * run's debauchery calls for adult content the normal description is kept and
+ * the debauched description follows it, separated by a paragraph break;
+ * it is never a replacement. When either part is missing the other (or the
+ * deterministic fallback) is used on its own.
+ */
+function composeMonsterDescription(
+	debauchery: number | undefined,
+	monster: MonsterDefinition,
+	fallback: string
+): string {
+	const normal = monster.description?.trim();
+	const debauched = monster.debauchedDescription?.trim();
+	if (debauchery !== undefined && debauchery >= 2) {
+		if (normal && debauched) return `${normal}\n\n${debauched}`;
+		if (debauched) return debauched;
+	}
+	return normal || fallback;
+}
+
 /* ------------------------------------------------------------------ *
  * Room generation
  * ------------------------------------------------------------------ */
@@ -334,13 +421,11 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 
 	if (isBoss) {
 		const monster = selectMonster(rng, input.monsters);
-		const description =
-			input.debauchery !== undefined &&
-			input.debauchery >= 2 &&
-			monster.debauchedDescription?.trim()
-				? monster.debauchedDescription.trim()
-				: monster.description?.trim() ||
-					`A chamber holds a monstrous guardian: ${monster.name}. ${monster.temperament}.`;
+		const description = composeMonsterDescription(
+			input.debauchery,
+			monster,
+			`A chamber holds a monstrous guardian: ${monster.name}. ${monster.temperament}.`
+		);
 		return {
 			type: 'boss',
 			boss: true,
@@ -355,12 +440,11 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 	switch (kind) {
 		case 'monster': {
 			const monster = selectMonster(rng, input.monsters);
-			const description =
-				input.debauchery !== undefined &&
-				input.debauchery >= 2 &&
-				monster.debauchedDescription?.trim()
-					? monster.debauchedDescription.trim()
-					: monster.description?.trim() || `${monster.name} lurks here. ${monster.temperament}.`;
+			const description = composeMonsterDescription(
+				input.debauchery,
+				monster,
+				`${monster.name} lurks here. ${monster.temperament}.`
+			);
 			return {
 				type: 'monster',
 				name: monster.name,

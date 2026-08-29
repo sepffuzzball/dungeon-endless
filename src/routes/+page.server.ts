@@ -92,6 +92,7 @@ export const load: PageServerLoad = async (event) => {
 	}));
 
 	return {
+		companyName: user.companyName || 'The Endless Company',
 		characters: charactersView,
 		activeRuns,
 		records: {

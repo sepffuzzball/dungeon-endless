@@ -199,12 +199,89 @@
 								></td
 							>
 							<td>
-								<form class="row-action" method="POST" action="?/toggle-endpoint">
-									<input type="hidden" name="id" value={endpoint.id} />
-									<button class="btn-outline" type="submit"
-										>{endpoint.enabled ? 'Disable' : 'Enable'}</button
-									>
-								</form>
+								<div class="actions">
+									<form class="row-action" method="POST" action="?/toggle-endpoint">
+										<input type="hidden" name="id" value={endpoint.id} />
+										<button class="btn-outline" type="submit"
+											>{endpoint.enabled ? 'Disable' : 'Enable'}</button
+										>
+									</form>
+									<details class="endpoint-editor">
+										<summary>Edit endpoint</summary>
+										<form method="POST" action="?/edit-endpoint">
+											<input type="hidden" name="id" value={endpoint.id} />
+											<label for={`en-${endpoint.id}`}
+												>Display name<input
+													id={`en-${endpoint.id}`}
+													name="name"
+													value={endpoint.name}
+													maxlength="120"
+													required
+												/></label
+											>
+											<label for={`ep-${endpoint.id}`}
+												>Purpose<select id={`ep-${endpoint.id}`} name="purpose"
+													><option value="prose" selected={endpoint.purpose === 'prose'}
+														>Prose</option
+													><option
+														value="interpretation"
+														selected={endpoint.purpose === 'interpretation'}>Interpretation</option
+													><option value="summary" selected={endpoint.purpose === 'summary'}
+														>Summary</option
+													><option value="suggestions" selected={endpoint.purpose === 'suggestions'}
+														>Suggestions</option
+													></select
+												></label
+											>
+											<label for={`eu-${endpoint.id}`}
+												>Base URL<input
+													id={`eu-${endpoint.id}`}
+													name="baseUrl"
+													type="url"
+													value={endpoint.baseUrl}
+													required
+												/></label
+											>
+											<label for={`em-${endpoint.id}`}
+												>Model<input
+													id={`em-${endpoint.id}`}
+													name="model"
+													value={endpoint.model}
+													maxlength="200"
+													required
+												/></label
+											>
+											<label for={`et-${endpoint.id}`}
+												>Timeout (ms)<input
+													id={`et-${endpoint.id}`}
+													name="timeoutMs"
+													type="number"
+													min="1000"
+													max="120000"
+													value={endpoint.timeoutMs}
+													required
+												/></label
+											>
+											<label for={`ek-${endpoint.id}`}
+												>Replacement API key <span class="field-hint"
+													>Leave blank to preserve the stored key.</span
+												><input
+													id={`ek-${endpoint.id}`}
+													name="apiKey"
+													type="password"
+													autocomplete="new-password"
+												/></label
+											>
+											<label class="check-label"
+												><input name="clearApiKey" type="checkbox" /> Clear stored API key</label
+											>
+											<label class="check-label"
+												><input name="enabled" type="checkbox" checked={endpoint.enabled} /> Enabled</label
+											>
+											<button type="submit">Save endpoint</button>
+										</form>
+									</details>
+								</div>
 							</td>
 						</tr>
 					{/each}
@@ -230,6 +307,14 @@
 		display: grid;
 		grid-template-columns: minmax(8rem, 1fr) auto;
 		gap: 0.4rem;
+	}
+	.endpoint-editor summary {
+		cursor: pointer;
+		font-weight: 700;
+	}
+	.endpoint-editor form {
+		min-width: min(24rem, 70vw);
+		padding-top: 0.75rem;
 	}
 	.row-action button,
 	.reset-action button,

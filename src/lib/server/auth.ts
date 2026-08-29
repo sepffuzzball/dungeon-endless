@@ -22,6 +22,7 @@ function toSafeUser(row: User): SafeUser {
 	return {
 		id: row.id,
 		username: row.username,
+		companyName: row.companyName,
 		role: row.role,
 		mustChangePassword: row.mustChangePassword,
 		createdAt: row.createdAt.toISOString()

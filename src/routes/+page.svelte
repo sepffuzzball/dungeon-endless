@@ -13,7 +13,7 @@
 <header class="page-header">
 	<div>
 		<div class="eyebrow">The living chronicle</div>
-		<h1>Welcome back, wayfarer.</h1>
+		<h1>{data.companyName} returns.</h1>
 		<p class="lede">
 			The lantern is lit. Your company waits at the threshold, where every descent writes a
 			different ending.

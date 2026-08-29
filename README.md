@@ -60,7 +60,7 @@ npm run preview
 Role-based access control is server-enforced:
 
 - `user`: dashboard, character creation, run setup, and owned play sessions.
-- `editor`: user access plus monster and trap content management.
+- `editor`: user access plus monster, trap, species, and calling content management.
 - `admin`: all access plus account and LLM endpoint administration.
 
 Administrators create accounts and can disable users or reset passwords. Disabling an account and resetting a password revoke its sessions. Run and character reads and mutations are scoped to the authenticated owner; knowing another run UUID does not grant access.
@@ -71,8 +71,10 @@ Administrators create accounts and can disable users or reset passwords. Disabli
 - `/change-password`: required password replacement for accounts marked by an administrator.
 - `/`: owned-character dashboard, active runs, records, and achievements.
 - `/characters` and `/characters/new`: create characters, buy a run charter, or continue an active run.
-- `/play/[runId]`: view an owned active or finished run. `?/act` resolves one room; `?/abandon` settles and closes an active run.
-- `/editor`: editor/admin monster and trap definitions used by future room generation.
+- `/settings`: update the authenticated user's company name.
+- `/play/[runId]`: view an owned active or finished run in the chronological expedition terminal. `?/act` resolves one room; `?/abandon` settles and closes an active run.
+- `/play/[runId]/stream`: authenticated, owner-scoped SSE for one exact turn or room-entry narration UUID.
+- `/editor`: editor/admin monster, trap, species, and calling definitions used by future rooms and characters. Existing snapshots retain their saved text.
 - `/admin`: admin-only users and OpenAI-compatible endpoints.
 - `/health`: process health endpoint used by the container health check.
 
@@ -85,11 +87,16 @@ Endpoint records have one of four purposes:
 
 Enabled endpoints are tried in name order for their purpose. URLs and all resolved A/AAAA addresses are validated immediately before each request, redirects are not followed, reads and token counts are bounded, and failures fall through to the next endpoint. If all endpoints fail or none are configured, deterministic action heuristics, suggestions, prose, and summaries are used. Model output never controls dice, targets, rewards, health, inventory, or settlement. No model or network call occurs inside a database transaction.
 
+Action and room-entry prose is streamed token-by-token after authoritative resolution. Pending, streaming, complete, and failed states plus accumulated prose are persisted. Producers hold a 30-second lease, renew it independently every eight seconds even while a model is silent, and condition every write on the exact claim timestamp. Followers replay only the durable saved suffix and immediately contend for an expired lease. Disconnects release a claimed record for recovery, while recovered partial output is finalized safely instead of being duplicated. Reverse proxies must not buffer `/play/*/stream` responses. The route requires `Accept: text/event-stream` plus an exact same-origin `Origin` or `Referer`, and sends `X-Accel-Buffering: no`, `Cache-Control: no-store, no-transform`, and periodic SSE keepalives. Proxy and load-balancer streaming timeouts still need suitable deployment configuration.
+
+JavaScript-enhanced actions return durable narration IDs for streaming. Ordinary HTML form submissions use deterministic narration for the current room, resolved turn, and next room before redirecting, so gameplay remains usable without JavaScript or an available model endpoint.
+
 ## Core game rules
 
 ### Characters and charters
 
-- A character starts with three points split across Body, Mind, and Spirit, each from 0 through 3. Maximum HP at run start is `5 + Body`.
+- A character profile starts with exactly one point split across Body, Mind, and Spirit, each 0 or 1. Species and calling choices are editor-managed snapshots; build and height use fixed choices, and profiles can include a 2000-character description.
+- Every expedition receives a temporary allocation totaling its selected level. Each stat is capped at 3 for levels 1 through 9; level 10 permits at most one stat at 4. Maximum HP at run start is `5 + allocated Body`.
 - Run level is 1 through 10. Level 1 is free; levels 2 through 10 cost `20 + 10 * (level - 2)` gold.
 - Starting-room cost is `5 * (room - 1)` gold.
 - Provisioned gear tiers 0 through 3 cost 0, 25, 75, and 225 gold. Each item grants +1 to every primary stat while carried.
@@ -113,7 +120,7 @@ Debauchery above 1 requires a character aged at least 18 and is checked both whe
 - Treasure requires no check, has three generated rewards, and always yields one draw. A boss has six and yields two draws on a successful combat result. Non-draught rewards enter run inventory.
 - On defeat or abandonment, inventory is settled exactly once: magic items sell for deterministic 1d2 gold, valuables for deterministic 1d6, and draughts for zero. Proceeds become persistent character gold and inventory is cleared.
 
-The run seed, room number, turn sequence, and purpose label seed every room, check, reward, and settlement stream. The current room is persisted as an immutable snapshot before play. Each accepted action inserts one immutable turn at `version + 1`; an expected version rejects stale forms and a UUID action key makes retries idempotent. The run row is locked during resolution, so the browser cannot choose a roll, spend, reward, or duplicate settlement.
+The run seed, room number, turn sequence, and purpose label seed every room, check, reward, and settlement stream. Complete charter metadata and the current room are persisted at run start, including a pending initial room-entry snapshot. Each accepted action inserts one immutable pending turn at `version + 1` and, on survival, the next pending room-entry snapshot in the same transaction. An expected version rejects stale forms and a UUID action key makes retries idempotent. The run row is locked during resolution, so the browser cannot choose a roll, spend, reward, or duplicate settlement. Narration and later summaries run outside gameplay transactions and cannot change these immutable snapshots or outcomes.
 
 Achievements are inserted and awarded idempotently for first entry, a character run's first defeat by the dungeon, reaching room 10, and accumulating 100 or 1000 persistent gold. Starting at room 10 or beyond records that depth and awards the corresponding achievement immediately.
 

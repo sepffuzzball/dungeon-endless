@@ -24,7 +24,7 @@
 		<aside class="sidebar" aria-label="Primary navigation">
 			<a class="brand" href="/" aria-label="Dungeon Endless home">
 				<span class="brand-mark" aria-hidden="true">DE</span>
-				<span>Dungeon Endless<small>A Chronicle Below</small></span>
+				<span>{user?.companyName || 'Dungeon Endless'}<small>Dungeon Endless</small></span>
 			</a>
 
 			{#if user}
@@ -34,14 +34,17 @@
 					<a href="/characters" class:active={active.startsWith('/characters')}
 						><span aria-hidden="true">02</span> Company</a
 					>
+					<a href="/settings" class:active={active.startsWith('/settings')}
+						><span aria-hidden="true">03</span> Settings</a
+					>
 					{#if isEditor}
 						<a href="/editor" class:active={active.startsWith('/editor')}
-							><span aria-hidden="true">03</span> Bestiary</a
+							><span aria-hidden="true">04</span> Bestiary</a
 						>
 					{/if}
 					{#if isAdmin}
 						<a href="/admin" class:active={active.startsWith('/admin')}
-							><span aria-hidden="true">04</span> Stewardship</a
+							><span aria-hidden="true">05</span> Stewardship</a
 						>
 					{/if}
 				</nav>

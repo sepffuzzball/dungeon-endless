@@ -6,12 +6,15 @@ import {
 	deriveStats,
 	generateRewardPool,
 	generateRoom,
+	isValidNewRunMeta,
 	mapActionIntent,
 	normalizeActionIntent,
 	resolveEncounter,
+	resolveRunBaseStats,
 	sellValue,
 	skillPrimary,
-	toTurnIntent
+	toTurnIntent,
+	validateStatAllocation
 } from '../src/lib/server/game';
 import { createRng } from '../src/lib/server/rng';
 import type { DerivedStats, InventoryItem, RoomSnapshot, TurnIntent } from '../src/lib/types';
@@ -156,6 +159,68 @@ describe('deriveStats', () => {
 	});
 });
 
+describe('per-run stat allocation', () => {
+	it('accepts allocations totaling each level from 1 through 9 with a cap of 3', () => {
+		for (let level = 1; level <= 9; level++) {
+			const body = Math.min(3, level);
+			const mind = Math.min(3, level - body);
+			const spirit = level - body - mind;
+			expect(validateStatAllocation(level, body, mind, spirit)).toBe(true);
+		}
+	});
+
+	it('rejects invalid levels, fractions, negatives, wrong totals and pre-10 values above 3', () => {
+		expect(validateStatAllocation(0, 0, 0, 0)).toBe(false);
+		expect(validateStatAllocation(11, 4, 4, 3)).toBe(false);
+		expect(validateStatAllocation(3, 1.5, 1, 0.5)).toBe(false);
+		expect(validateStatAllocation(3, -1, 2, 2)).toBe(false);
+		expect(validateStatAllocation(3, 1, 1, 0)).toBe(false);
+		expect(validateStatAllocation(4, 4, 0, 0)).toBe(false);
+	});
+
+	it('allows one 4 at level 10, but never two or a value above 4', () => {
+		expect(validateStatAllocation(10, 4, 3, 3)).toBe(true);
+		expect(validateStatAllocation(10, 3, 3, 4)).toBe(true);
+		expect(validateStatAllocation(10, 4, 4, 2)).toBe(false);
+		expect(validateStatAllocation(10, 5, 3, 2)).toBe(false);
+	});
+
+	it('requires complete valid metadata for new runs', () => {
+		expect(
+			isValidNewRunMeta({
+				startRoom: 5,
+				startLevel: 4,
+				gearBonus: 2,
+				allocatedBody: 2,
+				allocatedMind: 1,
+				allocatedSpirit: 1
+			})
+		).toBe(true);
+		expect(isValidNewRunMeta({})).toBe(false);
+		expect(isValidNewRunMeta({ startRoom: 0, startLevel: 1, gearBonus: 4, allocatedBody: 1 })).toBe(
+			false
+		);
+	});
+
+	it('uses a complete valid allocation and falls back for empty, partial or invalid legacy meta', () => {
+		const legacy = { body: 3, mind: 2, spirit: 1 };
+		expect(
+			resolveRunBaseStats(
+				{ startLevel: 4, allocatedBody: 2, allocatedMind: 1, allocatedSpirit: 1 },
+				legacy
+			)
+		).toEqual({ body: 2, mind: 1, spirit: 1 });
+		expect(resolveRunBaseStats({}, legacy)).toEqual(legacy);
+		expect(resolveRunBaseStats({ startLevel: 4, allocatedBody: 2 }, legacy)).toEqual(legacy);
+		expect(
+			resolveRunBaseStats(
+				{ startLevel: 4, allocatedBody: 4, allocatedMind: 0, allocatedSpirit: 0 },
+				legacy
+			)
+		).toEqual(legacy);
+	});
+});
+
 describe('generateRoom', () => {
 	it('makes every positive multiple of five a boss room', () => {
 		for (let roomNumber = 1; roomNumber <= 40; roomNumber++) {
@@ -269,7 +334,54 @@ describe('generateRoom', () => {
 			traps: []
 		});
 		expect(normal.description).toBe(monster.description);
-		expect(alternate.description).toBe(monster.debauchedDescription);
+		expect(alternate.description).toBe(`${monster.description}\n\n${monster.debauchedDescription}`);
+	});
+
+	it('uses a debauched-only description for adult monster rooms', () => {
+		const snapshot = generateRoom({
+			seed: 'debauched-only',
+			room: 5,
+			turn: 1,
+			debauchery: 2,
+			monsters: [
+				{
+					id: 'm',
+					name: 'Custom Horror',
+					tier: 1,
+					hp: 5,
+					defense: 7,
+					temperament: 'testy',
+					description: ' ',
+					debauchedDescription: 'Adult authored description.'
+				}
+			],
+			traps: []
+		});
+		expect(snapshot.description).toBe('Adult authored description.');
+	});
+
+	it('uses deterministic boss fallback when both authored descriptions are blank', () => {
+		const snapshot = generateRoom({
+			seed: 'blank-boss',
+			room: 5,
+			turn: 1,
+			debauchery: 2,
+			monsters: [
+				{
+					id: 'm',
+					name: 'Custom Horror',
+					tier: 1,
+					hp: 5,
+					defense: 7,
+					temperament: 'testy',
+					description: '',
+					debauchedDescription: ''
+				}
+			],
+			traps: []
+		});
+		expect(snapshot.type).toBe('boss');
+		expect(snapshot.description).toContain('Custom Horror');
 	});
 
 	it('falls back to the normal monster description when the alternate is blank', () => {

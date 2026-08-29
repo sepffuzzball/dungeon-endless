@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dungeon
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: dungeon
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dungeon -d dungeon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://dungeon:ci-only-password@localhost:5432/dungeon
+      APP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: ci-only-password
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify migration metadata and schema drift
+        run: npm run db:generate && git diff --exit-code -- migrations
+      - run: npm run db:migrate
+      - run: npm run bootstrap
+      - run: npm run ci

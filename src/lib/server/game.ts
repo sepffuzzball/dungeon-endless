@@ -1,0 +1,709 @@
+import {
+	SKILLS,
+	type DerivedStats,
+	type InventoryItem,
+	type MonsterDefinition,
+	type RoomSnapshot,
+	type SkillName,
+	type TrapDefinition,
+	type TurnIntent,
+	type TurnOutcome
+} from '$lib/types';
+import { createRng, rollCheck, type RollCheckResult, type Rng } from './rng';
+
+/*
+ * Pure dungeon rules. Everything here is deterministic given its inputs; no
+ * Math.random() is used anywhere. Routes persist the produced snapshots,
+ * rolls and outcomes without re-running or mutating this logic.
+ */
+
+export type PrimaryStat = 'body' | 'mind' | 'spirit';
+
+/** Maps each skill to the primary stat that governs it. */
+export const SKILL_PRIMARY: Record<SkillName, PrimaryStat> = {
+	Athletics: 'body',
+	Stealth: 'body',
+	Knowledge: 'mind',
+	Magic: 'mind',
+	Persuasion: 'spirit',
+	Willpower: 'spirit'
+};
+
+export function skillPrimary(skill: SkillName): PrimaryStat {
+	return SKILL_PRIMARY[skill];
+}
+
+/* ------------------------------------------------------------------ *
+ * Derived stats
+ * ------------------------------------------------------------------ */
+
+export const DEFAULT_GEAR_CAP = 5;
+const GEAR_BONUS_PER_ITEM = 1;
+
+export interface StatInput {
+	body: number;
+	mind: number;
+	spirit: number;
+	level: number;
+	hp: number;
+	maxHp: number;
+	defense: number;
+	attackBonus: number;
+	inventory?: readonly InventoryItem[];
+	gearCap?: number;
+}
+
+/** Effective stats after applying carried magic gear, with primary gear capped. */
+export function deriveStats(input: StatInput): DerivedStats {
+	const gearCap = input.gearCap ?? DEFAULT_GEAR_CAP;
+	const primaryBonus: Record<PrimaryStat, number> = { body: 0, mind: 0, spirit: 0 };
+	const skillBonus: Partial<Record<SkillName, number>> = {};
+	let attackBonus = 0;
+	let defenseBonus = 0;
+
+	for (const item of input.inventory ?? []) {
+		if (item.kind !== 'magic') continue;
+		switch (item.stat) {
+			case 'body':
+				primaryBonus.body += GEAR_BONUS_PER_ITEM;
+				break;
+			case 'mind':
+				primaryBonus.mind += GEAR_BONUS_PER_ITEM;
+				break;
+			case 'spirit':
+				primaryBonus.spirit += GEAR_BONUS_PER_ITEM;
+				break;
+			case 'general':
+				primaryBonus.body += GEAR_BONUS_PER_ITEM;
+				primaryBonus.mind += GEAR_BONUS_PER_ITEM;
+				primaryBonus.spirit += GEAR_BONUS_PER_ITEM;
+				break;
+			case 'skill':
+				if (item.skill)
+					skillBonus[item.skill] = (skillBonus[item.skill] ?? 0) + GEAR_BONUS_PER_ITEM;
+				break;
+			case 'attack':
+				attackBonus += GEAR_BONUS_PER_ITEM;
+				break;
+			case 'defense':
+				defenseBonus += GEAR_BONUS_PER_ITEM;
+				break;
+		}
+	}
+
+	const cap = (base: number, bonus: number): number => base + Math.min(bonus, gearCap);
+	const body = cap(input.body, primaryBonus.body);
+	const mind = cap(input.mind, primaryBonus.mind);
+	const spirit = cap(input.spirit, primaryBonus.spirit);
+
+	const skillValues = {} as Record<SkillName, number>;
+	for (const skill of SKILLS) {
+		const primary = SKILL_PRIMARY[skill];
+		const base = primary === 'body' ? body : primary === 'mind' ? mind : spirit;
+		skillValues[skill] = base + (skillBonus[skill] ?? 0);
+	}
+
+	return {
+		body,
+		mind,
+		spirit,
+		instinct: body + mind + spirit,
+		hp: input.hp,
+		defense: input.defense + defenseBonus,
+		attackBonus: input.attackBonus + attackBonus,
+		skillValues
+	};
+}
+
+/* ------------------------------------------------------------------ *
+ * Descriptive generated names
+ * ------------------------------------------------------------------ */
+
+const MAGIC_ITEM_WORDS = [
+	'Blade',
+	'Ring',
+	'Sigil',
+	'Mantle',
+	'Amulet',
+	'Glaive',
+	'Circlet',
+	'Greaves',
+	'Bracer',
+	'Lantern'
+];
+const MAGIC_ESSENCES = [
+	'Searing Sun',
+	'Ebon Ward',
+	'Runic Dawn',
+	'Thorned Crown',
+	'Ember Heart',
+	'Frost Veil',
+	'Warding Light',
+	'Deep Star',
+	'Restless Wind',
+	'Quiet Moon'
+];
+const DRAUGHT_VIRTUES = [
+	'Swift Mending',
+	'Deep Rest',
+	'Bitter Vigor',
+	'Clarity',
+	'Quiet Revival',
+	'Ember Balm',
+	'Still Water'
+];
+const VALUABLE_FORMS = ['Chalice', 'Idol', 'Crown', 'Scroll', 'Hourglass', 'Seal', 'Mask', 'Coins'];
+
+function magicItemName(rng: Rng): string {
+	return `${rng.pick(MAGIC_ITEM_WORDS)} of the ${rng.pick(MAGIC_ESSENCES)}`;
+}
+
+function draughtName(rng: Rng): string {
+	return `Draught of ${rng.pick(DRAUGHT_VIRTUES)}`;
+}
+
+function valuableName(rng: Rng): string {
+	return `Gilded ${rng.pick(VALUABLE_FORMS)}`;
+}
+
+const MAGIC_STATS: Array<InventoryItem['stat']> = [
+	'attack',
+	'defense',
+	'body',
+	'mind',
+	'spirit',
+	'skill'
+];
+
+function generateMagicItem(rng: Rng): InventoryItem {
+	const stat = rng.pick(MAGIC_STATS);
+	const item: InventoryItem = { kind: 'magic', name: magicItemName(rng), stat };
+	if (stat === 'skill') item.skill = rng.pick(SKILLS);
+	if (stat === 'body' || stat === 'mind' || stat === 'spirit' || stat === 'general') {
+		item.description = `Boosts your ${stat} while carried.`;
+	} else if (stat === 'attack' || stat === 'defense') {
+		item.description = `Boosts your ${stat} while carried.`;
+	} else if (stat === 'skill' && item.skill) {
+		item.description = `Boosts your ${item.skill} while carried.`;
+	}
+	return item;
+}
+
+function generateDraught(rng: Rng): InventoryItem {
+	return { kind: 'draught', name: draughtName(rng), description: 'An immediate healing draught.' };
+}
+
+function generateValuable(rng: Rng): InventoryItem {
+	return { kind: 'valuable', name: valuableName(rng), description: 'Sells at settlement.' };
+}
+
+/** Builds a reward pool split into equal thirds: magic, draught, valuable. */
+export function generateRewardPool(rng: Rng, size = 3): InventoryItem[] {
+	const third = Math.floor(size / 3);
+	const pool: InventoryItem[] = [];
+	for (let i = 0; i < third; i++) pool.push(generateMagicItem(rng));
+	for (let i = 0; i < third; i++) pool.push(generateDraught(rng));
+	for (let i = 0; i < size - third * 2; i++) pool.push(generateValuable(rng));
+	// Deterministic Fisher-Yates shuffle.
+	for (let i = pool.length - 1; i > 0; i--) {
+		const j = rng.range(0, i);
+		const tmp = pool[i];
+		pool[i] = pool[j];
+		pool[j] = tmp;
+	}
+	return pool;
+}
+
+/** Gold a settlement pays for an item; magic 1d2, valuable 1d6, draught none. */
+export function sellValue(item: InventoryItem, rng: Rng): number {
+	switch (item.kind) {
+		case 'magic':
+			return rng.range(1, 2);
+		case 'valuable':
+			return rng.range(1, 6);
+		case 'draught':
+			return 0;
+	}
+}
+
+/* ------------------------------------------------------------------ *
+ * Fallback definitions
+ * ------------------------------------------------------------------ */
+
+export const FALLBACK_MONSTERS: readonly MonsterDefinition[] = [
+	{
+		id: 'fallback-monster-1',
+		name: 'Charnel Crawler',
+		tier: 1,
+		hp: 8,
+		defense: 8,
+		temperament: 'Skittish, chittering'
+	},
+	{
+		id: 'fallback-monster-2',
+		name: 'Brine Husk',
+		tier: 2,
+		hp: 14,
+		defense: 11,
+		temperament: 'Slow, implacable'
+	},
+	{
+		id: 'fallback-monster-3',
+		name: 'Vault Stalker',
+		tier: 3,
+		hp: 20,
+		defense: 14,
+		temperament: 'Patient, shadowed'
+	}
+];
+
+export const FALLBACK_TRAPS: readonly TrapDefinition[] = [
+	{
+		id: 'fallback-trap-1',
+		name: 'Cinder Thread',
+		tier: 1,
+		target: 8,
+		skill: 'Stealth',
+		consequence: 'Burns vitality'
+	},
+	{
+		id: 'fallback-trap-2',
+		name: 'Bell Without a Tongue',
+		tier: 2,
+		target: 10,
+		skill: 'Knowledge',
+		consequence: 'Awakens the wax congregation'
+	},
+	{
+		id: 'fallback-trap-3',
+		name: 'Gravity Catch',
+		tier: 3,
+		target: 12,
+		skill: 'Athletics',
+		consequence: 'Drops you into a lightless pit'
+	}
+];
+
+function selectMonster(rng: Rng, monsters: readonly MonsterDefinition[]): MonsterDefinition {
+	const pool = monsters.length > 0 ? monsters : FALLBACK_MONSTERS;
+	return rng.pick(pool);
+}
+
+function selectTrap(rng: Rng, traps: readonly TrapDefinition[]): TrapDefinition {
+	const pool = traps.length > 0 ? traps : FALLBACK_TRAPS;
+	return rng.pick(pool);
+}
+
+/* ------------------------------------------------------------------ *
+ * Room generation
+ * ------------------------------------------------------------------ */
+
+export const BOSS_TARGET_BONUS = 2;
+export const TRAP_DC_BASE = 5;
+export const BOSS_REWARD_POOL_SIZE = 6;
+export const TREASURE_REWARD_POOL_SIZE = 3;
+export const BOSS_REWARDS_ON_SUCCESS = 2;
+export const HP_LOSS_ON_FAILURE = 1;
+export const REST_HEAL = 1;
+export const DRAUGHT_HEAL = 1;
+
+export interface GenerateRoomInput {
+	seed: string;
+	room: number;
+	turn: number;
+	debauchery?: number;
+	monsters: readonly MonsterDefinition[];
+	traps: readonly TrapDefinition[];
+}
+
+const KIND_WEIGHTS = [
+	{ kind: 'monster' as const, weight: 50 },
+	{ kind: 'trap' as const, weight: 20 },
+	{ kind: 'treasure' as const, weight: 10 },
+	{ kind: 'rest' as const, weight: 10 }
+];
+
+/**
+ * Generates the immutable snapshot for a room. Positive multiples of five are
+ * boss rooms; other rooms follow the normalized monster/trap/treasure/rest
+ * weights. Empty definition lists fall back to the deterministic built-ins.
+ */
+export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
+	const rng = createRng(input.seed, input.room, input.turn, 'room');
+	const isBoss = input.room > 0 && input.room % 5 === 0;
+
+	if (isBoss) {
+		const monster = selectMonster(rng, input.monsters);
+		const description =
+			input.debauchery !== undefined &&
+			input.debauchery >= 2 &&
+			monster.debauchedDescription?.trim()
+				? monster.debauchedDescription.trim()
+				: monster.description?.trim() ||
+					`A chamber holds a monstrous guardian: ${monster.name}. ${monster.temperament}.`;
+		return {
+			type: 'boss',
+			boss: true,
+			name: monster.name,
+			description,
+			defense: monster.defense + BOSS_TARGET_BONUS,
+			rewards: generateRewardPool(rng, BOSS_REWARD_POOL_SIZE)
+		};
+	}
+
+	const kind = rng.weighted(KIND_WEIGHTS).kind;
+	switch (kind) {
+		case 'monster': {
+			const monster = selectMonster(rng, input.monsters);
+			const description =
+				input.debauchery !== undefined &&
+				input.debauchery >= 2 &&
+				monster.debauchedDescription?.trim()
+					? monster.debauchedDescription.trim()
+					: monster.description?.trim() || `${monster.name} lurks here. ${monster.temperament}.`;
+			return {
+				type: 'monster',
+				name: monster.name,
+				description,
+				defense: monster.defense
+			};
+		}
+		case 'trap': {
+			const trap = selectTrap(rng, input.traps);
+			return {
+				type: 'trap',
+				name: trap.name,
+				description: trap.description?.trim() || `${trap.name}. ${trap.consequence}.`,
+				dc: TRAP_DC_BASE + Math.floor(input.room / 5),
+				skill: trap.skill
+			};
+		}
+		case 'treasure':
+			return {
+				type: 'treasure',
+				name: 'Hidden Hoard',
+				description: 'A promising cache of goods waits to be claimed.',
+				rewards: generateRewardPool(rng, TREASURE_REWARD_POOL_SIZE)
+			};
+		case 'rest':
+			return {
+				type: 'rest',
+				name: 'Quiet Nook',
+				description: 'A safe corner where you can catch your breath.'
+			};
+	}
+}
+
+/* ------------------------------------------------------------------ *
+ * Action intent mapping
+ * ------------------------------------------------------------------ */
+
+export type ActionApproach = 'skill' | 'combat' | 'none';
+
+export interface MappedIntent {
+	approach: ActionApproach;
+	skill?: SkillName;
+	/** Always clamped to -2..2. */
+	advantage: number;
+}
+
+const COMBAT_KEYWORDS = [
+	'attack',
+	'strike',
+	'fight',
+	'charge',
+	'smite',
+	'bash',
+	'kill',
+	'slay',
+	'swing',
+	'hit',
+	'combat',
+	'engage',
+	'stab',
+	'shoot'
+];
+
+const SKILL_KEYWORDS: Record<SkillName, string[]> = {
+	Athletics: [
+		'climb',
+		'jump',
+		'push',
+		'lift',
+		'sprint',
+		'run',
+		'swim',
+		'break',
+		'force',
+		'strength'
+	],
+	Knowledge: ['read', 'study', 'recall', 'inscribe', 'translate', 'research', 'lore', 'decipher'],
+	Magic: ['cast', 'spell', 'enchant', 'channel', 'arcane', 'invoke', 'weave', 'conjure'],
+	Persuasion: ['persuade', 'charm', 'bargain', 'negotiate', 'coax', 'flatter', 'talk', 'bribe'],
+	Stealth: ['sneak', 'hide', 'creep', 'prowl', 'silent', 'shadow', 'steal', 'skulk'],
+	Willpower: ['resist', 'endure', 'steady', 'focus', 'brace', 'withstand', 'resolve', 'temper']
+};
+
+function clampAdvantage(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.max(-2, Math.min(2, Math.round(value)));
+}
+
+/**
+ * Maps a typed action (or free text) to the bounded intent shape. The result
+ * can only ever be `{approach, skill?, advantage}` with advantage in -2..2,
+ * which is exactly the shape model output is constrained to as well.
+ */
+export function mapActionIntent(raw: {
+	method?: string;
+	skill?: string;
+	advantage?: number;
+	text?: string;
+	room?: RoomSnapshot;
+}): MappedIntent {
+	const text = (raw.text ?? '').toLowerCase();
+	const method = (raw.method ?? '').toLowerCase();
+
+	let approach: ActionApproach;
+	let skill: SkillName | undefined;
+
+	if (method === 'skill' || method === 'combat' || method === 'none') {
+		approach = method;
+	} else if (COMBAT_KEYWORDS.some((word) => text.includes(word))) {
+		approach = 'combat';
+	} else {
+		const matched = SKILLS.find((candidate) =>
+			SKILL_KEYWORDS[candidate].some((word) => text.includes(word))
+		);
+		if (matched) {
+			approach = 'skill';
+			skill = matched;
+		} else {
+			approach = 'combat';
+		}
+	}
+
+	const requestedSkill = raw.skill as SkillName | undefined;
+	if (requestedSkill && SKILLS.includes(requestedSkill)) {
+		skill = requestedSkill;
+	}
+
+	const mapped = { approach, skill, advantage: clampAdvantage(raw.advantage ?? 0) };
+	if (raw.room) return normalizeActionIntent(raw.room, mapped);
+	return mapped.approach === 'none' ? { approach: 'combat', advantage: mapped.advantage } : mapped;
+}
+
+/** Enforces which bounded approaches are valid for the authoritative room type. */
+export function normalizeActionIntent(room: RoomSnapshot, mapped: MappedIntent): MappedIntent {
+	const advantage = clampAdvantage(mapped.advantage);
+	if (room.type === 'treasure' || room.type === 'rest') {
+		return { approach: 'none', advantage };
+	}
+	if (mapped.approach !== 'none') {
+		return {
+			approach: mapped.approach,
+			...(mapped.approach === 'skill' && mapped.skill ? { skill: mapped.skill } : {}),
+			advantage
+		};
+	}
+	if (room.type === 'trap') {
+		return { approach: 'skill', skill: roomSkill(room), advantage };
+	}
+	return { approach: 'combat', advantage };
+}
+
+/** Converts the bounded intent into the persisted TurnIntent shape. */
+export function toTurnIntent(mapped: MappedIntent): TurnIntent {
+	return {
+		method: mapped.approach,
+		...(mapped.skill ? { skill: mapped.skill } : {}),
+		advantage: mapped.advantage
+	};
+}
+
+/** The skill an encounter should use when the intent left it unspecified. */
+export function roomSkill(room: RoomSnapshot): SkillName {
+	if (room.skill) return room.skill;
+	return 'Athletics';
+}
+
+/* ------------------------------------------------------------------ *
+ * Encounter resolution
+ * ------------------------------------------------------------------ */
+
+export interface EncounterInput {
+	seed: string;
+	roomNumber: number;
+	turn: number;
+	room: RoomSnapshot;
+	intent: TurnIntent;
+	stats: DerivedStats;
+	hp: number;
+	maxHp: number;
+}
+
+export interface EncounterResult {
+	outcome: TurnOutcome;
+	rolls: RollCheckResult[];
+}
+
+/** Draws up to `count` rewards from the pool; draughts are consumed immediately for healing. */
+function drawRewards(
+	pool: InventoryItem[],
+	count: number,
+	rng: Rng,
+	hpAfter: number,
+	maxHp: number
+) {
+	const gained: InventoryItem[] = [];
+	for (let i = 0; i < count && pool.length > 0; i++) {
+		const index = rng.range(0, pool.length - 1);
+		const item = pool.splice(index, 1)[0];
+		if (item.kind === 'draught') {
+			hpAfter = Math.min(maxHp, hpAfter + DRAUGHT_HEAL);
+		} else {
+			gained.push(item);
+		}
+	}
+	return { gained, hpAfter };
+}
+
+/**
+ * Resolves one encounter into an immutable outcome. Combat checks the attack
+ * bonus against the room's defense, traps check the named skill against the
+ * DC; a failed check costs 1 HP. Rest rooms always heal. Boss rooms grant
+ * two rewards on success.
+ */
+export function resolveEncounter(input: EncounterInput): EncounterResult {
+	const { room, intent, stats, hp, maxHp } = input;
+	const rng = createRng(input.seed, input.roomNumber, input.turn, 'encounter');
+	const rolls: RollCheckResult[] = [];
+
+	const hpBefore = hp;
+	let hpAfter = hp;
+	let result: TurnOutcome['result'] = 'success';
+	let message = '';
+	let rewards: InventoryItem[] = [];
+	let gold: number | undefined;
+	let injury: string | undefined;
+
+	switch (room.type) {
+		case 'monster':
+		case 'boss': {
+			const target = room.defense ?? 8;
+			if (intent.method === 'skill' && intent.skill) {
+				const skill = intent.skill;
+				const check = rollCheck(
+					stats.skillValues[skill],
+					target,
+					intent.advantage,
+					`${skill} check`,
+					rng
+				);
+				rolls.push(check);
+				if (check.success) {
+					result = 'reward';
+					message = `You slip past ${room.name ?? 'the monster'} undetected.`;
+				} else {
+					hpAfter = Math.max(0, hpAfter - HP_LOSS_ON_FAILURE);
+					result = 'failure';
+					message = `${room.name ?? 'The monster'} catches you and you take a wound.`;
+					injury = 'caught while sneaking';
+				}
+			} else {
+				const check = rollCheck(
+					stats.attackBonus,
+					target,
+					intent.advantage,
+					room.type === 'boss' ? 'Attack the boss' : 'Attack',
+					rng
+				);
+				rolls.push(check);
+				if (check.success) {
+					if (room.type === 'boss') {
+						const drawn = drawRewards(
+							room.rewards ?? [],
+							BOSS_REWARDS_ON_SUCCESS,
+							rng,
+							hpAfter,
+							maxHp
+						);
+						rewards = drawn.gained;
+						hpAfter = drawn.hpAfter;
+						result = 'reward';
+						message = `You slay the boss ${room.name}. Your spoils are gathered.`;
+					} else {
+						result = 'reward';
+						message = `You defeat ${room.name}.`;
+					}
+				} else {
+					hpAfter = Math.max(0, hpAfter - HP_LOSS_ON_FAILURE);
+					result = 'failure';
+					message = `${room.name ?? 'The monster'} overpowers you and you take a wound.`;
+					injury = 'wounded in combat';
+				}
+			}
+			break;
+		}
+		case 'trap': {
+			const target = room.dc ?? 10;
+			const skill = room.skill ?? 'Athletics';
+			const check = rollCheck(
+				intent.method === 'combat' ? stats.attackBonus : stats.skillValues[skill],
+				target,
+				intent.advantage,
+				intent.method === 'combat' ? 'Smash through the trap' : `${skill} check`,
+				rng
+			);
+			rolls.push(check);
+			if (check.success) {
+				result = 'reward';
+				message = `You get past ${room.name}.`;
+			} else {
+				hpAfter = Math.max(0, hpAfter - HP_LOSS_ON_FAILURE);
+				result = 'failure';
+				message = room.description ?? `${room.name} springs its trap on you.`;
+				injury = 'trap damage';
+			}
+			break;
+		}
+		case 'treasure': {
+			const pool = [...(room.rewards ?? [])];
+			if (pool.length === 0) {
+				result = 'rest';
+				message = 'The chamber is empty.';
+				break;
+			}
+			const drawn = drawRewards(pool, 1, rng, hpAfter, maxHp);
+			rewards = drawn.gained;
+			hpAfter = drawn.hpAfter;
+			result = 'reward';
+			message = `You claim the ${room.name ?? 'hidden hoard'}.`;
+			break;
+		}
+		case 'rest': {
+			hpAfter = Math.min(maxHp, hpAfter + REST_HEAL);
+			result = 'rest';
+			message = 'You rest in the quiet nook and recover 1 HP.';
+			break;
+		}
+	}
+
+	if (hpAfter <= 0) {
+		result = 'defeat';
+		message = 'Your strength fails and the dungeon claims you.';
+	}
+
+	const outcome: TurnOutcome = {
+		result,
+		hpBefore,
+		hpAfter,
+		hpDelta: hpAfter - hpBefore,
+		message,
+		...(rewards.length > 0 ? { rewards } : {}),
+		...(injury ? { injury } : {}),
+		...(gold !== undefined ? { gold } : {})
+	};
+
+	return { outcome, rolls };
+}

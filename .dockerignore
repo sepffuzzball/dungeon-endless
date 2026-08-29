@@ -1,0 +1,10 @@
+node_modules
+build
+.svelte-kit
+coverage
+.git
+.github
+*.log
+.env
+Dockerfile
+.dockerignore

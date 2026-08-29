@@ -1,0 +1,545 @@
+import { describe, it, expect } from 'vitest';
+import {
+	BOSS_TARGET_BONUS,
+	FALLBACK_MONSTERS,
+	TRAP_DC_BASE,
+	deriveStats,
+	generateRewardPool,
+	generateRoom,
+	mapActionIntent,
+	normalizeActionIntent,
+	resolveEncounter,
+	sellValue,
+	skillPrimary,
+	toTurnIntent
+} from '../src/lib/server/game';
+import { createRng } from '../src/lib/server/rng';
+import type { DerivedStats, InventoryItem, RoomSnapshot, TurnIntent } from '../src/lib/types';
+
+function baseStats(overrides?: Partial<DerivedStats>): DerivedStats {
+	return {
+		body: 3,
+		mind: 3,
+		spirit: 3,
+		instinct: 9,
+		hp: 10,
+		defense: 10,
+		attackBonus: 2,
+		skillValues: {
+			Athletics: 3,
+			Knowledge: 3,
+			Magic: 3,
+			Persuasion: 3,
+			Stealth: 3,
+			Willpower: 3
+		},
+		...overrides
+	};
+}
+
+function room(partial: Partial<RoomSnapshot> & { type: RoomSnapshot['type'] }): RoomSnapshot {
+	return { name: 'The Room', ...partial };
+}
+
+function resolve(
+	roomData: RoomSnapshot,
+	intent: TurnIntent,
+	stats: DerivedStats = baseStats(),
+	hp = 10,
+	maxHp = 10
+) {
+	return resolveEncounter({
+		seed: 'test-seed',
+		roomNumber: 1,
+		turn: 1,
+		room: roomData,
+		intent,
+		stats,
+		hp,
+		maxHp
+	});
+}
+
+describe('skillPrimary', () => {
+	it('maps every skill to the correct primary stat', () => {
+		expect(skillPrimary('Athletics')).toBe('body');
+		expect(skillPrimary('Stealth')).toBe('body');
+		expect(skillPrimary('Knowledge')).toBe('mind');
+		expect(skillPrimary('Magic')).toBe('mind');
+		expect(skillPrimary('Persuasion')).toBe('spirit');
+		expect(skillPrimary('Willpower')).toBe('spirit');
+	});
+});
+
+describe('deriveStats', () => {
+	it('returns base stats with no inventory', () => {
+		const stats = deriveStats({
+			body: 2,
+			mind: 3,
+			spirit: 4,
+			level: 1,
+			hp: 9,
+			maxHp: 12,
+			defense: 9,
+			attackBonus: 1
+		});
+		expect(stats.body).toBe(2);
+		expect(stats.mind).toBe(3);
+		expect(stats.spirit).toBe(4);
+		expect(stats.instinct).toBe(9);
+		expect(stats.skillValues.Athletics).toBe(2);
+		expect(stats.skillValues.Magic).toBe(3);
+		expect(stats.skillValues.Willpower).toBe(4);
+	});
+
+	it('applies magic gear to primaries up to the gear cap', () => {
+		const items: InventoryItem[] = [
+			{ kind: 'magic', name: 'A', stat: 'body' },
+			{ kind: 'magic', name: 'B', stat: 'body' },
+			{ kind: 'magic', name: 'C', stat: 'body' }
+		];
+		const stats = deriveStats({
+			body: 3,
+			mind: 3,
+			spirit: 3,
+			level: 1,
+			hp: 10,
+			maxHp: 10,
+			defense: 10,
+			attackBonus: 1,
+			inventory: items
+		});
+		expect(stats.body).toBe(6);
+	});
+
+	it('caps primary gear contribution at the gear cap', () => {
+		const items: InventoryItem[] = Array.from({ length: 9 }, () => ({
+			kind: 'magic',
+			name: 'x',
+			stat: 'body'
+		}));
+		const stats = deriveStats({
+			body: 1,
+			mind: 1,
+			spirit: 1,
+			level: 1,
+			hp: 10,
+			maxHp: 10,
+			defense: 10,
+			attackBonus: 1,
+			inventory: items
+		});
+		expect(stats.body).toBe(6); // 1 base + cap of 5
+	});
+
+	it('applies attack, defense and skill bonuses from gear', () => {
+		const items: InventoryItem[] = [
+			{ kind: 'magic', name: 'A', stat: 'attack' },
+			{ kind: 'magic', name: 'B', stat: 'defense' },
+			{ kind: 'magic', name: 'C', stat: 'skill', skill: 'Magic' },
+			{ kind: 'draught', name: 'D' }
+		];
+		const stats = deriveStats({
+			body: 3,
+			mind: 3,
+			spirit: 3,
+			level: 1,
+			hp: 10,
+			maxHp: 10,
+			defense: 10,
+			attackBonus: 1,
+			inventory: items
+		});
+		expect(stats.attackBonus).toBe(2);
+		expect(stats.defense).toBe(11);
+		expect(stats.skillValues.Magic).toBe(4);
+	});
+});
+
+describe('generateRoom', () => {
+	it('makes every positive multiple of five a boss room', () => {
+		for (let roomNumber = 1; roomNumber <= 40; roomNumber++) {
+			const snapshot = generateRoom({
+				seed: 'boss-scan',
+				room: roomNumber,
+				turn: 1,
+				monsters: [],
+				traps: []
+			});
+			if (roomNumber % 5 === 0) {
+				expect(snapshot.type).toBe('boss');
+				expect(snapshot.boss).toBe(true);
+			} else {
+				expect(snapshot.type).not.toBe('boss');
+			}
+		}
+	});
+
+	it('adds the boss target bonus to the chosen monster defense', () => {
+		const snapshot = generateRoom({ seed: 'boss-def', room: 5, turn: 1, monsters: [], traps: [] });
+		expect(snapshot.type).toBe('boss');
+		const rng = createRng('boss-def', 5, 1, 'room');
+		const index = Math.floor(rng.next() * FALLBACK_MONSTERS.length);
+		expect(snapshot.defense).toBe(FALLBACK_MONSTERS[index].defense + BOSS_TARGET_BONUS);
+	});
+
+	it('gives boss rooms a double-size reward pool', () => {
+		const snapshot = generateRoom({
+			seed: 'boss-pool',
+			room: 10,
+			turn: 1,
+			monsters: [],
+			traps: []
+		});
+		expect(snapshot.rewards).toHaveLength(6);
+	});
+
+	it('only produces monster, trap, treasure or rest for non-boss rooms', () => {
+		const allowed = new Set(['monster', 'trap', 'treasure', 'rest']);
+		for (let roomNumber = 1; roomNumber <= 60; roomNumber++) {
+			if (roomNumber % 5 === 0) continue;
+			const snapshot = generateRoom({
+				seed: 'kind-scan',
+				room: roomNumber,
+				turn: 1,
+				monsters: [],
+				traps: []
+			});
+			expect(allowed.has(snapshot.type)).toBe(true);
+		}
+	});
+
+	it('computes trap DC as 5 + floor(room / 5)', () => {
+		for (let roomNumber = 1; roomNumber <= 120; roomNumber++) {
+			const snapshot = generateRoom({
+				seed: 'trap-dc',
+				room: roomNumber,
+				turn: 1,
+				monsters: [],
+				traps: []
+			});
+			if (snapshot.type === 'trap') {
+				expect(snapshot.dc).toBe(TRAP_DC_BASE + Math.floor(roomNumber / 5));
+				expect(snapshot.skill).toBeDefined();
+			}
+		}
+	});
+
+	it('uses provided definitions when present', () => {
+		const snapshot = generateRoom({
+			seed: 'custom',
+			room: 2,
+			turn: 1,
+			monsters: [
+				{ id: 'm', name: 'Custom Horror', tier: 1, hp: 5, defense: 7, temperament: 'testy' }
+			],
+			traps: []
+		});
+		if (snapshot.type === 'monster') {
+			expect(snapshot.name).toBe('Custom Horror');
+			expect(snapshot.defense).toBe(7);
+		}
+	});
+
+	it('snapshots normal and debauched editor-authored monster descriptions', () => {
+		const monster = {
+			id: 'm',
+			name: 'Custom Horror',
+			tier: 1,
+			hp: 5,
+			defense: 7,
+			temperament: 'testy',
+			description: 'The normal authored description.',
+			debauchedDescription: 'The alternate authored description.'
+		};
+		const normal = generateRoom({
+			seed: 'authored',
+			room: 5,
+			turn: 1,
+			debauchery: 1,
+			monsters: [monster],
+			traps: []
+		});
+		const alternate = generateRoom({
+			seed: 'authored',
+			room: 5,
+			turn: 1,
+			debauchery: 2,
+			monsters: [monster],
+			traps: []
+		});
+		expect(normal.description).toBe(monster.description);
+		expect(alternate.description).toBe(monster.debauchedDescription);
+	});
+
+	it('falls back to the normal monster description when the alternate is blank', () => {
+		const snapshot = generateRoom({
+			seed: 'blank-alternate',
+			room: 5,
+			turn: 1,
+			debauchery: 5,
+			monsters: [
+				{
+					id: 'm',
+					name: 'Custom Horror',
+					tier: 1,
+					hp: 5,
+					defense: 7,
+					temperament: 'testy',
+					description: 'The normal authored description.',
+					debauchedDescription: '   '
+				}
+			],
+			traps: []
+		});
+		expect(snapshot.description).toBe('The normal authored description.');
+	});
+
+	it('snapshots editor-authored trap descriptions', () => {
+		let snapshot: RoomSnapshot | undefined;
+		for (let roomNumber = 1; roomNumber < 100 && snapshot?.type !== 'trap'; roomNumber++) {
+			if (roomNumber % 5 === 0) continue;
+			const candidate = generateRoom({
+				seed: 'authored-trap',
+				room: roomNumber,
+				turn: 1,
+				monsters: [],
+				traps: [
+					{
+						id: 't',
+						name: 'Custom Trap',
+						tier: 1,
+						target: 8,
+						skill: 'Knowledge',
+						consequence: 'A consequence',
+						description: 'The authored trap description.'
+					}
+				]
+			});
+			if (candidate.type === 'trap') snapshot = candidate;
+		}
+		expect(snapshot?.description).toBe('The authored trap description.');
+	});
+
+	it('is deterministic for identical inputs', () => {
+		const a = generateRoom({ seed: 'det', room: 3, turn: 1, monsters: [], traps: [] });
+		const b = generateRoom({ seed: 'det', room: 3, turn: 1, monsters: [], traps: [] });
+		expect(a).toEqual(b);
+	});
+});
+
+describe('resolveEncounter', () => {
+	it('defeats a monster on a successful combat roll', () => {
+		const result = resolve(
+			room({ type: 'monster', defense: 8 }),
+			{ method: 'combat', advantage: 0 },
+			baseStats({ attackBonus: 100 })
+		);
+		expect(result.outcome.result).toBe('reward');
+		expect(result.outcome.hpDelta).toBe(0);
+		expect(result.rolls).toHaveLength(1);
+	});
+
+	it('loses 1 HP when combat fails', () => {
+		const result = resolve(
+			room({ type: 'monster', defense: 8 }),
+			{ method: 'combat', advantage: 0 },
+			baseStats({ attackBonus: -100 }),
+			7
+		);
+		expect(result.outcome.result).toBe('failure');
+		expect(result.outcome.hpAfter).toBe(6);
+		expect(result.outcome.hpDelta).toBe(-1);
+	});
+
+	it('grants two rewards when a boss is defeated', () => {
+		const rewards: InventoryItem[] = [
+			{ kind: 'magic', name: 'M1', stat: 'attack' },
+			{ kind: 'magic', name: 'M2', stat: 'defense' }
+		];
+		const result = resolve(
+			room({ type: 'boss', defense: 10, rewards }),
+			{ method: 'combat', advantage: 0 },
+			baseStats({ attackBonus: 100 })
+		);
+		expect(result.outcome.result).toBe('reward');
+		expect(result.outcome.rewards).toHaveLength(2);
+	});
+
+	it('lets a skill approach slip past a monster', () => {
+		const stats = baseStats({ skillValues: { ...baseStats().skillValues, Stealth: 100 } });
+		const result = resolve(
+			room({ type: 'monster', defense: 8 }),
+			{ method: 'skill', skill: 'Stealth', advantage: 0 },
+			stats
+		);
+		expect(result.outcome.result).toBe('reward');
+		expect(result.outcome.hpDelta).toBe(0);
+	});
+
+	it('fails a trap check and loses 1 HP', () => {
+		const stats = baseStats({ skillValues: { ...baseStats().skillValues, Knowledge: 0 } });
+		const result = resolve(
+			room({ type: 'trap', dc: 20, skill: 'Knowledge' }),
+			{ method: 'skill', skill: 'Knowledge', advantage: 0 },
+			stats,
+			5
+		);
+		expect(result.outcome.result).toBe('failure');
+		expect(result.outcome.hpAfter).toBe(4);
+	});
+
+	it('reaches defeat when HP drops to zero', () => {
+		const stats = baseStats({ skillValues: { ...baseStats().skillValues, Knowledge: 0 } });
+		const result = resolve(
+			room({ type: 'trap', dc: 20, skill: 'Knowledge' }),
+			{ method: 'skill', skill: 'Knowledge', advantage: 0 },
+			stats,
+			1
+		);
+		expect(result.outcome.result).toBe('defeat');
+		expect(result.outcome.hpAfter).toBe(0);
+	});
+
+	it('draws one reward from a treasure room', () => {
+		const rewards: InventoryItem[] = [{ kind: 'valuable', name: 'Gilded Crown' }];
+		const result = resolve(room({ type: 'treasure', rewards }), { method: 'none', advantage: 0 });
+		expect(result.outcome.result).toBe('reward');
+		expect(result.outcome.rewards).toEqual(rewards);
+	});
+
+	it('never checks or harms the hero when claiming treasure with another method', () => {
+		const rewards: InventoryItem[] = [{ kind: 'valuable', name: 'Gilded Crown' }];
+		const result = resolve(
+			room({ type: 'treasure', rewards, dc: 100 }),
+			{ method: 'combat', advantage: -2 },
+			baseStats({ attackBonus: -100 }),
+			1
+		);
+		expect(result.rolls).toEqual([]);
+		expect(result.outcome.result).toBe('reward');
+		expect(result.outcome.hpAfter).toBe(1);
+		expect(result.outcome.rewards).toEqual(rewards);
+	});
+
+	it('consumes an immediate healing draught for HP', () => {
+		const rewards: InventoryItem[] = [{ kind: 'draught', name: 'Draught of Rest' }];
+		const result = resolve(
+			room({ type: 'treasure', rewards }),
+			{ method: 'none', advantage: 0 },
+			baseStats(),
+			5,
+			10
+		);
+		expect(result.outcome.result).toBe('reward');
+		expect(result.outcome.hpAfter).toBe(6);
+		expect(result.outcome.rewards).toBeUndefined();
+	});
+
+	it('rests and recovers 1 HP', () => {
+		const result = resolve(
+			room({ type: 'rest' }),
+			{ method: 'none', advantage: 0 },
+			baseStats(),
+			5,
+			10
+		);
+		expect(result.outcome.result).toBe('rest');
+		expect(result.outcome.hpAfter).toBe(6);
+	});
+});
+
+describe('mapActionIntent', () => {
+	it('detects combat from text', () => {
+		expect(mapActionIntent({ text: 'I strike the goblin hard' }).approach).toBe('combat');
+	});
+
+	it('detects a skill from text', () => {
+		const mapped = mapActionIntent({ text: 'I sneak past the sentry' });
+		expect(mapped.approach).toBe('skill');
+		expect(mapped.skill).toBe('Stealth');
+	});
+
+	it('honours an explicit method and skill', () => {
+		const mapped = mapActionIntent({ method: 'skill', skill: 'Magic', text: 'I attack' });
+		expect(mapped.approach).toBe('skill');
+		expect(mapped.skill).toBe('Magic');
+	});
+
+	it('clamps advantage into -2..2', () => {
+		expect(mapActionIntent({ text: 'attack', advantage: 9 }).advantage).toBe(2);
+		expect(mapActionIntent({ text: 'attack', advantage: -9 }).advantage).toBe(-2);
+	});
+
+	it('converts to the persisted TurnIntent shape', () => {
+		const turn: TurnIntent = toTurnIntent({ approach: 'skill', skill: 'Persuasion', advantage: 1 });
+		expect(turn.method).toBe('skill');
+		expect(turn.skill).toBe('Persuasion');
+		expect(turn.advantage).toBe(1);
+	});
+
+	it('maps treasure claim actions to no-check intent', () => {
+		const mapped = mapActionIntent({
+			text: 'I claim the treasure.',
+			room: room({ type: 'treasure' })
+		});
+		expect(mapped).toEqual({ approach: 'none', advantage: 0 });
+	});
+
+	it('does not accept none without an authoritative no-check room', () => {
+		expect(mapActionIntent({ method: 'none' })).toEqual({ approach: 'combat', advantage: 0 });
+	});
+
+	it('normalizes model-supplied none according to the authoritative room', () => {
+		expect(
+			normalizeActionIntent(room({ type: 'monster' }), { approach: 'none', advantage: 1 })
+		).toEqual({ approach: 'combat', advantage: 1 });
+		expect(
+			normalizeActionIntent(room({ type: 'boss' }), { approach: 'none', advantage: 0 })
+		).toEqual({ approach: 'combat', advantage: 0 });
+		expect(
+			normalizeActionIntent(room({ type: 'trap', skill: 'Magic' }), {
+				approach: 'none',
+				advantage: -1
+			})
+		).toEqual({ approach: 'skill', skill: 'Magic', advantage: -1 });
+	});
+
+	it('normalizes treasure and rest approaches to none', () => {
+		expect(
+			normalizeActionIntent(room({ type: 'treasure' }), { approach: 'combat', advantage: 0 })
+		).toEqual({ approach: 'none', advantage: 0 });
+		expect(
+			normalizeActionIntent(room({ type: 'rest' }), {
+				approach: 'skill',
+				skill: 'Stealth',
+				advantage: 0
+			})
+		).toEqual({ approach: 'none', advantage: 0 });
+	});
+});
+
+describe('sellValue', () => {
+	it('sells magic for 1d2, valuable for 1d6 and draught for nothing', () => {
+		const rng = createRng('sell', 1, 1, 'sell');
+		const magic = sellValue({ kind: 'magic', name: 'M', stat: 'attack' }, rng);
+		expect(magic).toBeGreaterThanOrEqual(1);
+		expect(magic).toBeLessThanOrEqual(2);
+		const valuable = sellValue({ kind: 'valuable', name: 'V' }, rng);
+		expect(valuable).toBeGreaterThanOrEqual(1);
+		expect(valuable).toBeLessThanOrEqual(6);
+		expect(sellValue({ kind: 'draught', name: 'D' }, rng)).toBe(0);
+	});
+});
+
+describe('generateRewardPool', () => {
+	it('produces equal thirds of magic, draught and valuable', () => {
+		const rng = createRng('pool', 1, 1, 'pool');
+		const pool = generateRewardPool(rng, 6);
+		expect(pool).toHaveLength(6);
+		const kinds = pool.map((item) => item.kind);
+		expect(kinds.filter((k) => k === 'magic')).toHaveLength(2);
+		expect(kinds.filter((k) => k === 'draught')).toHaveLength(2);
+		expect(kinds.filter((k) => k === 'valuable')).toHaveLength(2);
+	});
+});

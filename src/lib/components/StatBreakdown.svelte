@@ -196,6 +196,7 @@
 		font-size: 0.9rem;
 	}
 	.stat-breakdown-popover {
+		display: none;
 		position: fixed;
 		inset: auto;
 		box-sizing: border-box;
@@ -211,6 +212,9 @@
 		box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 		font-size: 0.78rem;
 		line-height: 1.45;
+	}
+	.stat-breakdown-popover:popover-open {
+		display: block;
 	}
 	.stat-breakdown-popover::backdrop {
 		background: transparent;

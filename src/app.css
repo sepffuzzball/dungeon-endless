@@ -1029,7 +1029,7 @@ input:disabled {
 	gap: 0.45rem;
 	margin: 1rem 0 1.4rem;
 }
-.run-facts div {
+.run-facts > div {
 	display: flex;
 	justify-content: space-between;
 	padding-bottom: 0.45rem;

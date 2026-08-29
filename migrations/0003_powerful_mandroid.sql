@@ -1,0 +1,1 @@
+ALTER TABLE "characters" ADD COLUMN "retired_at" timestamp with time zone;

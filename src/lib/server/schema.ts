@@ -118,6 +118,7 @@ export const characters = pgTable(
 		maxStartRoom: integer('max_start_room').notNull().default(1),
 		furthestFloor: integer('furthest_floor').notNull().default(0),
 		active: boolean('active').notNull().default(false),
+		retiredAt: timestamp('retired_at', { withTimezone: true }),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 	},

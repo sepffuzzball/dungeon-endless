@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { fail, redirect } from '@sveltejs/kit';
 import { z } from 'zod';
 import { achievementByKey } from '$lib/server/achievements';
@@ -31,7 +31,11 @@ const integer = (form: FormData, name: string) => {
 export const load: PageServerLoad = async (event) => {
 	const user = requireUser(event);
 	const [characterRows, activeRuns, [account]] = await Promise.all([
-		db.select().from(characters).where(eq(characters.userId, user.id)).orderBy(characters.name),
+		db
+			.select()
+			.from(characters)
+			.where(and(eq(characters.userId, user.id), isNull(characters.retiredAt)))
+			.orderBy(characters.name),
 		db
 			.select({ id: runs.id, characterId: runs.characterId, roomNumber: runs.roomNumber })
 			.from(runs)
@@ -98,6 +102,8 @@ export const actions: Actions = {
 					.limit(1)
 					.for('update');
 				if (!character) return { error: 'Character not found.', status: 404 };
+				if (character.retiredAt)
+					return { error: 'Retired characters cannot begin a new expedition.', status: 409 };
 				if (startRoom > character.maxStartRoom)
 					return {
 						error: `This character can start no deeper than room ${character.maxStartRoom}.`,

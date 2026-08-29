@@ -398,10 +398,17 @@ p {
 	margin-top: 0.7rem;
 }
 .main {
+	grid-column: 2;
+	min-width: 0;
+	width: 100%;
+	max-width: none;
+	padding: clamp(1.4rem, 4vw, 3.5rem);
+	overflow-wrap: anywhere;
+}
+.main > * {
+	min-width: 0;
 	width: 100%;
 	max-width: 1440px;
-	padding: clamp(1.4rem, 4vw, 3.5rem);
-	overflow: hidden;
 }
 .card {
 	position: relative;
@@ -1190,6 +1197,9 @@ input:disabled {
 		padding: 0.65rem 0.75rem;
 	}
 	.main {
+		grid-column: 1;
+		min-width: 0;
+		width: 100%;
 		padding: 1.25rem 1rem 3rem;
 	}
 	.page-header {

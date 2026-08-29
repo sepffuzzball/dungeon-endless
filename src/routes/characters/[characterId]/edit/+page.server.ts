@@ -2,10 +2,11 @@ import { and, eq } from 'drizzle-orm';
 import { error, fail, redirect } from '@sveltejs/kit';
 import { z } from 'zod';
 import { requireUser } from '$lib/server/authorization';
+import { retirementConfirmed } from '$lib/server/character-lifecycle';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import { validCharacterAge, validImageUrl } from '$lib/server/game';
-import { callingDefinitions, characters, speciesDefinitions } from '$lib/server/schema';
+import { callingDefinitions, characters, runs, speciesDefinitions } from '$lib/server/schema';
 import { BUILD_OPTIONS, HEIGHT_OPTIONS } from '$lib/types';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -58,6 +59,8 @@ export const actions: Actions = {
 		if (!id.success) return fail(400, { error: 'Invalid character.' });
 		const existing = await ownedCharacter(id.data, user.id);
 		if (!existing) return fail(404, { error: 'Character not found.' });
+		if (existing.retiredAt)
+			return fail(409, { error: 'Retired character profiles are read-only.' });
 		const form = await event.request.formData();
 		const name = text(form, 'name');
 		const title = text(form, 'title');
@@ -103,21 +106,79 @@ export const actions: Actions = {
 				.limit(1);
 			if (!enabled.length) return fail(400, { error: 'Choose an enabled calling.' });
 		}
-		await db
-			.update(characters)
-			.set({
-				name,
-				title,
-				description,
-				age,
-				height,
-				build,
-				species,
-				className,
-				imageUrl: imageUrl || null,
-				updatedAt: new Date()
-			})
-			.where(and(eq(characters.id, id.data), eq(characters.userId, user.id)));
+		const mutation = await db.transaction(async (tx) => {
+			const [character] = await tx
+				.select({ id: characters.id, retiredAt: characters.retiredAt })
+				.from(characters)
+				.where(and(eq(characters.id, id.data), eq(characters.userId, user.id)))
+				.limit(1)
+				.for('update');
+			if (!character) return { error: 'Character not found.', status: 404 };
+			if (character.retiredAt)
+				return { error: 'Retired character profiles are read-only.', status: 409 };
+			await tx
+				.update(characters)
+				.set({
+					name,
+					title,
+					description,
+					age,
+					height,
+					build,
+					species,
+					className,
+					imageUrl: imageUrl || null,
+					updatedAt: new Date()
+				})
+				.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
+			return null;
+		});
+		if (mutation) return fail(mutation.status, { error: mutation.error });
+		throw redirect(303, '/characters');
+	},
+	retire: async (event) => {
+		assertSameOrigin(event);
+		const user = requireUser(event);
+		const id = uuidSchema.safeParse(event.params.characterId);
+		if (!id.success) return fail(400, { error: 'Invalid character.' });
+		const form = await event.request.formData();
+		const confirmationName = text(form, 'confirmationName');
+		const confirmed = form.get('confirmRetirement') === 'yes';
+
+		type Result = { error: string; status: number } | { retired: boolean };
+		const result = await db.transaction(async (tx): Promise<Result> => {
+			// Retirement uses the same character-first lock order as expedition start and upgrades.
+			const [character] = await tx
+				.select()
+				.from(characters)
+				.where(and(eq(characters.id, id.data), eq(characters.userId, user.id)))
+				.limit(1)
+				.for('update');
+			if (!character) return { error: 'Character not found.', status: 404 };
+			if (character.retiredAt) return { retired: false };
+			const [active] = await tx
+				.select({ id: runs.id })
+				.from(runs)
+				.where(and(eq(runs.characterId, character.id), eq(runs.status, 'active')))
+				.limit(1);
+			if (active)
+				return {
+					error: 'Finish or abandon the active expedition before retiring this character.',
+					status: 409
+				};
+			if (!retirementConfirmed(character.name, confirmationName, confirmed))
+				return {
+					error: 'Confirm retirement and enter the character name exactly as shown.',
+					status: 400
+				};
+			const now = new Date();
+			await tx
+				.update(characters)
+				.set({ retiredAt: now, updatedAt: now })
+				.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
+			return { retired: true };
+		});
+		if ('error' in result) return fail(result.status, { error: result.error });
 		throw redirect(303, '/characters');
 	}
 };

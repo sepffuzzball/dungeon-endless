@@ -50,7 +50,6 @@ describe('level prompts', () => {
 		expect(brutalityPrompt(99)).toBe(BRUTALITY_PROMPTS[4]);
 		expect(debaucheryPrompt(99)).toBe(DEBAUCHERY_PROMPTS[4]);
 	});
-
 });
 
 describe('delimit', () => {

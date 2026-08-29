@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, eq, gte, isNull, sql } from 'drizzle-orm';
 import { fail } from '@sveltejs/kit';
 import { z } from 'zod';
 import type { CharacterCard } from '$lib/types';
@@ -24,7 +24,7 @@ export const load: PageServerLoad = async (event) => {
 		db
 			.select()
 			.from(characters)
-			.where(eq(characters.userId, user.id))
+			.where(and(eq(characters.userId, user.id), isNull(characters.retiredAt)))
 			.orderBy(characters.createdAt),
 		db
 			.select({ id: runs.id, characterId: runs.characterId })
@@ -77,6 +77,8 @@ async function upgrade(event: Parameters<Actions[string]>[0], kind: UpgradeKind)
 				.limit(1)
 				.for('update');
 			if (!character) return { error: 'Character not found.', status: 404 };
+			if (character.retiredAt)
+				return { error: 'Retired characters cannot be upgraded.', status: 409 };
 			const [active] = await tx
 				.select({ id: runs.id })
 				.from(runs)

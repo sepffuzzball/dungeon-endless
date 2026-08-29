@@ -72,7 +72,7 @@ Administrators create accounts and can disable users or reset passwords. Disabli
 - `/login`: cookie-session authentication.
 - `/change-password`: required password replacement for accounts marked by an administrator.
 - `/`: owned-character dashboard, active runs, records, and achievements.
-- `/characters`, `/characters/new`, and `/characters/[characterId]/edit`: create and edit character profiles, buy permanent progression, or continue an active run.
+- `/characters`, `/characters/new`, and `/characters/[characterId]/edit`: create and edit character profiles, buy permanent progression, continue an active run, or irreversibly retire an inactive owned character.
 - `/dungeon`: choose an owned character and unlocked starting room, or resume an active expedition.
 - `/settings`: update the company name and future-expedition brutality/debauchery settings.
 - `/play/[runId]`: view an owned active or finished run in the chronological expedition terminal. `?/act` resolves one room; `?/abandon` settles and closes an active run.
@@ -103,6 +103,7 @@ JavaScript-enhanced actions return durable narration IDs for streaming. Ordinary
 - Permanent company gear tiers +1 through +3 cost 25, 75, and 225 company gold. Gear is materialized into each new run as explicitly non-sellable inventory.
 - Starting-room access costs 5 company gold per one-room increase, to a maximum of 1000. Starting an expedition itself is free and may use any room from 1 through that character's unlocked maximum.
 - New rules-version-2 expeditions snapshot the character's level, stats, gear, starting room, and company settings. Later edits and upgrades cannot change an active run. Legacy rules-version-1 runs continue using their saved charter metadata, inventory, HP, and settings.
+- Retirement is irreversible and is blocked while a character has an active expedition. Retired characters leave normal rosters and cannot be edited, upgraded, or sent on new expeditions; their completed runs and company records remain intact.
 - The play loop uses `5 + run level` base defense and `Body + run level` base attack. Magic gear can add to attack, defense, a primary stat, or a skill. Primary gear bonuses are capped at +5.
 
 ### Sliders

@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { CharacterCard, DashboardAchievement, RunSummary } from '$lib/types';
 import { requireUser } from '$lib/server/authorization';
 import { db } from '$lib/server/db';
@@ -8,7 +8,10 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async (event) => {
 	const user = requireUser(event);
 
-	const characterRows = await db.select().from(characters).where(eq(characters.userId, user.id));
+	const characterRows = await db
+		.select()
+		.from(characters)
+		.where(and(eq(characters.userId, user.id), isNull(characters.retiredAt)));
 
 	const activeRows = await db
 		.select({ runId: runs.id, characterId: runs.characterId })

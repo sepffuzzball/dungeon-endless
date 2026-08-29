@@ -77,6 +77,7 @@ export interface CharacterRow {
 	maxStartRoom: number;
 	furthestFloor: number;
 	active: boolean;
+	retiredAt: Date | null;
 	createdAt: Date;
 	updatedAt: Date;
 }

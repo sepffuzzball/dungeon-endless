@@ -1,6 +1,6 @@
 {
-	"id": "0cb9ebb7-6408-45b4-b517-a68b78b34942",
-	"prevId": "00000000-0000-0000-0000-000000000000",
+	"id": "1b253854-2831-4992-89f5-5df242e07772",
+	"prevId": "78bb2d30-f87b-4939-a2f4-a39318f54c67",
 	"version": "7",
 	"dialect": "postgresql",
 	"tables": {
@@ -66,6 +66,102 @@
 			"checkConstraints": {},
 			"isRLSEnabled": false
 		},
+		"public.calling_definitions": {
+			"name": "calling_definitions",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "uuid",
+					"primaryKey": true,
+					"notNull": true,
+					"default": "gen_random_uuid()"
+				},
+				"name": {
+					"name": "name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"name_normalized": {
+					"name": "name_normalized",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"description": {
+					"name": "description",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "''"
+				},
+				"enabled": {
+					"name": "enabled",
+					"type": "boolean",
+					"primaryKey": false,
+					"notNull": true,
+					"default": true
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "now()"
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "now()"
+				}
+			},
+			"indexes": {
+				"calling_definitions_name_normalized_unique": {
+					"name": "calling_definitions_name_normalized_unique",
+					"columns": [
+						{
+							"expression": "name_normalized",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"calling_definitions_enabled_idx": {
+					"name": "calling_definitions_enabled_idx",
+					"columns": [
+						{
+							"expression": "enabled",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {
+				"calling_definitions_name_normalized_check": {
+					"name": "calling_definitions_name_normalized_check",
+					"value": "name_normalized = lower(name)"
+				}
+			},
+			"isRLSEnabled": false
+		},
 		"public.characters": {
 			"name": "characters",
 			"schema": "",
@@ -96,6 +192,19 @@
 					"notNull": true,
 					"default": "''"
 				},
+				"description": {
+					"name": "description",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "''"
+				},
+				"image_url": {
+					"name": "image_url",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": false
+				},
 				"age": {
 					"name": "age",
 					"type": "integer",
@@ -118,8 +227,7 @@
 				},
 				"species": {
 					"name": "species",
-					"type": "species",
-					"typeSchema": "public",
+					"type": "text",
 					"primaryKey": false,
 					"notNull": true
 				},
@@ -161,6 +269,20 @@
 					"notNull": true,
 					"default": 0
 				},
+				"gear_bonus": {
+					"name": "gear_bonus",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 0
+				},
+				"max_start_room": {
+					"name": "max_start_room",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 1
+				},
 				"furthest_floor": {
 					"name": "furthest_floor",
 					"type": "integer",
@@ -174,6 +296,12 @@
 					"primaryKey": false,
 					"notNull": true,
 					"default": false
+				},
+				"retired_at": {
+					"name": "retired_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": false
 				},
 				"created_at": {
 					"name": "created_at",
@@ -221,7 +349,40 @@
 			"compositePrimaryKeys": {},
 			"uniqueConstraints": {},
 			"policies": {},
-			"checkConstraints": {},
+			"checkConstraints": {
+				"characters_age_range": {
+					"name": "characters_age_range",
+					"value": "\"characters\".\"age\" between 1 and 999"
+				},
+				"characters_level_range": {
+					"name": "characters_level_range",
+					"value": "\"characters\".\"level\" between 1 and 10"
+				},
+				"characters_body_range": {
+					"name": "characters_body_range",
+					"value": "\"characters\".\"body\" between 0 and 4"
+				},
+				"characters_mind_range": {
+					"name": "characters_mind_range",
+					"value": "\"characters\".\"mind\" between 0 and 4"
+				},
+				"characters_spirit_range": {
+					"name": "characters_spirit_range",
+					"value": "\"characters\".\"spirit\" between 0 and 4"
+				},
+				"characters_gear_bonus_range": {
+					"name": "characters_gear_bonus_range",
+					"value": "\"characters\".\"gear_bonus\" between 0 and 3"
+				},
+				"characters_max_start_room_range": {
+					"name": "characters_max_start_room_range",
+					"value": "\"characters\".\"max_start_room\" between 1 and 1000"
+				},
+				"characters_valid_stat_allocation": {
+					"name": "characters_valid_stat_allocation",
+					"value": "\"characters\".\"body\" + \"characters\".\"mind\" + \"characters\".\"spirit\" = \"characters\".\"level\"\n\t\t\t\tand ((\"characters\".\"level\" < 10 and greatest(\"characters\".\"body\", \"characters\".\"mind\", \"characters\".\"spirit\") <= 3)\n\t\t\t\tor (\"characters\".\"level\" = 10 and greatest(\"characters\".\"body\", \"characters\".\"mind\", \"characters\".\"spirit\") <= 4\n\t\t\t\tand ((\"characters\".\"body\" = 4)::int + (\"characters\".\"mind\" = 4)::int + (\"characters\".\"spirit\" = 4)::int) <= 1))"
+				}
+			},
 			"isRLSEnabled": false
 		},
 		"public.llm_endpoints": {
@@ -393,6 +554,140 @@
 			"checkConstraints": {},
 			"isRLSEnabled": false
 		},
+		"public.room_entries": {
+			"name": "room_entries",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "uuid",
+					"primaryKey": true,
+					"notNull": true,
+					"default": "gen_random_uuid()"
+				},
+				"run_id": {
+					"name": "run_id",
+					"type": "uuid",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"room_number": {
+					"name": "room_number",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"run_version": {
+					"name": "run_version",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"room_snapshot": {
+					"name": "room_snapshot",
+					"type": "jsonb",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"prose": {
+					"name": "prose",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "''"
+				},
+				"status": {
+					"name": "status",
+					"type": "narration_status",
+					"typeSchema": "public",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'pending'"
+				},
+				"started_at": {
+					"name": "started_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "now()"
+				}
+			},
+			"indexes": {
+				"room_entries_run_id_idx": {
+					"name": "room_entries_run_id_idx",
+					"columns": [
+						{
+							"expression": "run_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"room_entries_run_id_room_number_unique": {
+					"name": "room_entries_run_id_room_number_unique",
+					"columns": [
+						{
+							"expression": "run_id",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						},
+						{
+							"expression": "room_number",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {
+				"room_entries_run_id_runs_id_fk": {
+					"name": "room_entries_run_id_runs_id_fk",
+					"tableFrom": "room_entries",
+					"tableTo": "runs",
+					"columnsFrom": ["run_id"],
+					"columnsTo": ["id"],
+					"onDelete": "cascade",
+					"onUpdate": "no action"
+				}
+			},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {
+				"room_entries_room_number_positive": {
+					"name": "room_entries_room_number_positive",
+					"value": "room_number > 0"
+				},
+				"room_entries_run_version_nonnegative": {
+					"name": "room_entries_run_version_nonnegative",
+					"value": "run_version >= 0"
+				}
+			},
+			"isRLSEnabled": false
+		},
 		"public.runs": {
 			"name": "runs",
 			"schema": "",
@@ -497,6 +792,13 @@
 					"type": "jsonb",
 					"primaryKey": false,
 					"notNull": true
+				},
+				"meta": {
+					"name": "meta",
+					"type": "jsonb",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'{}'::jsonb"
 				},
 				"inventory": {
 					"name": "inventory",
@@ -679,6 +981,102 @@
 			"checkConstraints": {},
 			"isRLSEnabled": false
 		},
+		"public.species_definitions": {
+			"name": "species_definitions",
+			"schema": "",
+			"columns": {
+				"id": {
+					"name": "id",
+					"type": "uuid",
+					"primaryKey": true,
+					"notNull": true,
+					"default": "gen_random_uuid()"
+				},
+				"name": {
+					"name": "name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"name_normalized": {
+					"name": "name_normalized",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
+				"description": {
+					"name": "description",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "''"
+				},
+				"enabled": {
+					"name": "enabled",
+					"type": "boolean",
+					"primaryKey": false,
+					"notNull": true,
+					"default": true
+				},
+				"created_at": {
+					"name": "created_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "now()"
+				},
+				"updated_at": {
+					"name": "updated_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "now()"
+				}
+			},
+			"indexes": {
+				"species_definitions_name_normalized_unique": {
+					"name": "species_definitions_name_normalized_unique",
+					"columns": [
+						{
+							"expression": "name_normalized",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": true,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				},
+				"species_definitions_enabled_idx": {
+					"name": "species_definitions_enabled_idx",
+					"columns": [
+						{
+							"expression": "enabled",
+							"isExpression": false,
+							"asc": true,
+							"nulls": "last"
+						}
+					],
+					"isUnique": false,
+					"concurrently": false,
+					"method": "btree",
+					"with": {}
+				}
+			},
+			"foreignKeys": {},
+			"compositePrimaryKeys": {},
+			"uniqueConstraints": {},
+			"policies": {},
+			"checkConstraints": {
+				"species_definitions_name_normalized_check": {
+					"name": "species_definitions_name_normalized_check",
+					"value": "name_normalized = lower(name)"
+				}
+			},
+			"isRLSEnabled": false
+		},
 		"public.traps": {
 			"name": "traps",
 			"schema": "",
@@ -829,6 +1227,26 @@
 					"notNull": true,
 					"default": "''"
 				},
+				"narration_status": {
+					"name": "narration_status",
+					"type": "narration_status",
+					"typeSchema": "public",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'complete'"
+				},
+				"narration_started_at": {
+					"name": "narration_started_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": false
+				},
+				"narration_updated_at": {
+					"name": "narration_updated_at",
+					"type": "timestamp with time zone",
+					"primaryKey": false,
+					"notNull": false
+				},
 				"turn_summary": {
 					"name": "turn_summary",
 					"type": "text",
@@ -978,6 +1396,34 @@
 					"primaryKey": false,
 					"notNull": true
 				},
+				"company_name": {
+					"name": "company_name",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true,
+					"default": "'The Endless Company'"
+				},
+				"company_gold": {
+					"name": "company_gold",
+					"type": "bigint",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 0
+				},
+				"brutality": {
+					"name": "brutality",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 3
+				},
+				"debauchery": {
+					"name": "debauchery",
+					"type": "integer",
+					"primaryKey": false,
+					"notNull": true,
+					"default": 3
+				},
 				"password_hash": {
 					"name": "password_hash",
 					"type": "text",
@@ -1046,6 +1492,22 @@
 				"users_username_normalized": {
 					"name": "users_username_normalized",
 					"value": "username = lower(username)"
+				},
+				"users_company_gold_nonnegative": {
+					"name": "users_company_gold_nonnegative",
+					"value": "\"users\".\"company_gold\" >= 0"
+				},
+				"users_company_gold_safe_integer": {
+					"name": "users_company_gold_safe_integer",
+					"value": "\"users\".\"company_gold\" <= 9007199254740991"
+				},
+				"users_brutality_range": {
+					"name": "users_brutality_range",
+					"value": "\"users\".\"brutality\" between 1 and 5"
+				},
+				"users_debauchery_range": {
+					"name": "users_debauchery_range",
+					"value": "\"users\".\"debauchery\" between 1 and 5"
 				}
 			},
 			"isRLSEnabled": false
@@ -1056,6 +1518,11 @@
 			"name": "llm_purpose",
 			"schema": "public",
 			"values": ["prose", "interpretation", "summary", "suggestions"]
+		},
+		"public.narration_status": {
+			"name": "narration_status",
+			"schema": "public",
+			"values": ["pending", "streaming", "complete", "failed"]
 		},
 		"public.user_role": {
 			"name": "user_role",
@@ -1076,11 +1543,6 @@
 			"name": "skill",
 			"schema": "public",
 			"values": ["Athletics", "Knowledge", "Magic", "Persuasion", "Stealth", "Willpower"]
-		},
-		"public.species": {
-			"name": "species",
-			"schema": "public",
-			"values": ["Wolfen", "Foxen", "Gnoll", "Human", "Elf", "Dwarf"]
 		}
 	},
 	"schemas": {},

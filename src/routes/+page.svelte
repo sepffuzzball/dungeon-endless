@@ -1,12 +1,16 @@
 <script lang="ts">
 	import StatCard from '$lib/components/StatCard.svelte';
 	let { data } = $props();
+	let failedImages = $state<Record<string, boolean>>({});
+	const unlockedAchievements = $derived(
+		data.achievements.filter((achievement) => achievement.unlocked)
+	);
 </script>
 
 <svelte:head
-	><title>Chronicle | Dungeon Endless</title><meta
+	><title>Chronicle | Dungeon of the Endless</title><meta
 		name="description"
-		content="Your company and records in Dungeon Endless."
+		content="Your characters and records in Dungeon of the Endless."
 	/></svelte:head
 >
 
@@ -15,27 +19,23 @@
 		<div class="eyebrow">The living chronicle</div>
 		<h1>{data.companyName} returns.</h1>
 		<p class="lede">
-			The lantern is lit. Your company waits at the threshold, where every descent writes a
-			different ending.
+			Your characters wait at the threshold, where every descent writes a different ending.
 		</p>
 	</div>
 	<div class="actions">
-		<a class="btn btn-secondary" href="/characters">View company</a><a
+		<a class="btn btn-secondary" href="/characters">View characters</a><a
 			class="btn"
 			href="/characters/new">Create a hero</a
 		>
 	</div>
+	<a class="btn" href="/dungeon">Enter the Dungeon</a>
 </header>
 
 <section class="stat-grid" aria-label="Career records">
-	<StatCard
-		label="Deepest descent"
-		value={`Depth ${data.records.furthestFloor}`}
-		hint="Personal record"
-	/>
-	<StatCard label="Vaulted gold" value={data.records.gold} hint="Across the company" />
-	<StatCard label="Expeditions" value={data.records.runs} hint="Stories begun" />
-	<StatCard label="Lost below" value={data.records.defeats} hint="Never forgotten" />
+	<StatCard label="Deepest descent" value={`Depth ${data.records.furthestFloor}`} />
+	<StatCard label="Vaulted gold" value={data.records.gold} />
+	<StatCard label="Expeditions" value={data.records.runs} />
+	<StatCard label="Lost below" value={data.records.defeats} />
 </section>
 
 {#if data.activeRuns.length}
@@ -59,15 +59,29 @@
 	<section class="card">
 		<div class="card-head">
 			<div>
-				<div class="eyebrow">Your company</div>
+				<div class="eyebrow">Characters</div>
 				<h2>Bound to the lantern</h2>
 			</div>
-			<a href="/characters">All heroes</a>
+			<a href="/characters">All characters</a>
 		</div>
 		<div class="grid-2">
 			{#each data.characters as character (character.id)}
 				<article class="character-card">
-					<div class="character-monogram" aria-hidden="true">{character.name.slice(0, 1)}</div>
+					{#if character.imageUrl && !failedImages[character.id]}
+						<div class="portrait-thumb">
+							<img
+								src={character.imageUrl}
+								alt={`Portrait of ${character.name}`}
+								loading="lazy"
+								referrerpolicy="no-referrer"
+								width="56"
+								height="56"
+								onerror={() => (failedImages = { ...failedImages, [character.id]: true })}
+							/>
+						</div>
+					{:else}
+						<div class="character-monogram" aria-hidden="true">{character.name.slice(0, 1)}</div>
+					{/if}
 					<div>
 						<h3>{character.name}</h3>
 						<div class="text-muted">{character.title}</div>
@@ -85,18 +99,19 @@
 	<section class="card burgundy">
 		<div class="eyebrow">Milestones</div>
 		<h2>Marks in the stone</h2>
-		<ul class="list-plain">
-			{#each data.achievements as achievement (achievement.key)}
-				<li>
-					<div class="card-head">
-						<strong>{achievement.name}</strong><span
-							class="badge {achievement.unlocked ? 'gold' : ''}"
-							>{achievement.unlocked ? 'Earned' : 'Veiled'}</span
-						>
-					</div>
-					<span class="text-dim">{achievement.description}</span>
-				</li>
-			{/each}
-		</ul>
+		{#if unlockedAchievements.length}
+			<ul class="list-plain">
+				{#each unlockedAchievements as achievement (achievement.key)}
+					<li>
+						<div class="card-head">
+							<strong>{achievement.name}</strong><span class="badge gold">Earned</span>
+						</div>
+						<span class="text-dim">{achievement.description}</span>
+					</li>
+				{/each}
+			</ul>
+		{:else}
+			<p class="text-muted">No marks have been earned yet. The stone waits.</p>
+		{/if}
 	</section>
 </div>

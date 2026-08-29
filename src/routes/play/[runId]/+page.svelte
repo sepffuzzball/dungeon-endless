@@ -141,7 +141,7 @@
 	});
 </script>
 
-<svelte:head><title>Depth {data.room.number} | Dungeon Endless</title></svelte:head>
+<svelte:head><title>Depth {data.room.number} | Dungeon of the Endless</title></svelte:head>
 <header class="page-header play-header">
 	<div>
 		<div class="eyebrow">{data.characterName} / {data.status} expedition</div>
@@ -206,8 +206,8 @@
 				<dd>+{data.character.attackBonus}</dd>
 			</div>
 			<div>
-				<dt>Banked gold</dt>
-				<dd>{data.character.gold}</dd>
+				<dt>Company gold</dt>
+				<dd>{data.companyGold}</dd>
 			</div>
 		</dl>
 		<div class="inventory-head">

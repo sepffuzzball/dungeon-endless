@@ -42,6 +42,9 @@ export interface SafeUser {
 	username: string;
 	/** Older page/test fixtures may omit this; persisted users always receive the database default. */
 	companyName?: string;
+	companyGold?: number;
+	brutality?: number;
+	debauchery?: number;
 	role: Role;
 	mustChangePassword: boolean;
 	createdAt: string;
@@ -59,6 +62,7 @@ export interface CharacterRow {
 	name: string;
 	title: string;
 	description: string;
+	imageUrl: string | null;
 	age: number;
 	height: string;
 	build: string;
@@ -69,6 +73,8 @@ export interface CharacterRow {
 	mind: number;
 	spirit: number;
 	persistentGold: number;
+	gearBonus: number;
+	maxStartRoom: number;
 	furthestFloor: number;
 	active: boolean;
 	createdAt: Date;
@@ -161,6 +167,8 @@ export interface InventoryItem {
 	stat?: MagicStat;
 	skill?: SkillName;
 	value?: number;
+	/** Explicitly false for persistent gear, which must never be sold at settlement. */
+	sellable?: boolean;
 }
 
 export interface RollRecord {
@@ -235,7 +243,9 @@ export interface CharacterCard {
 	body: number;
 	mind: number;
 	spirit: number;
-	gold: number;
+	imageUrl?: string | null;
+	gearBonus: number;
+	maxStartRoom: number;
 	furthestDepth: number;
 	activeRunId?: string;
 }
@@ -376,4 +386,5 @@ export interface PlayView {
 	inventory: InventoryItem[];
 	summary: string;
 	characterName: string;
+	companyGold: number;
 }

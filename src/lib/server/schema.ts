@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
 	boolean,
+	bigint,
 	check,
 	index,
 	integer,
@@ -55,6 +56,9 @@ export const users = pgTable(
 		id: uuid('id').primaryKey().defaultRandom(),
 		username: text('username').notNull(),
 		companyName: text('company_name').notNull().default('The Endless Company'),
+		companyGold: bigint('company_gold', { mode: 'number' }).notNull().default(0),
+		brutality: integer('brutality').notNull().default(3),
+		debauchery: integer('debauchery').notNull().default(3),
 		passwordHash: text('password_hash').notNull(),
 		role: roleEnum('role').notNull().default('user'),
 		disabled: boolean('disabled').notNull().default(false),
@@ -64,7 +68,11 @@ export const users = pgTable(
 	},
 	(table) => [
 		uniqueIndex('users_username_unique').on(table.username),
-		check('users_username_normalized', sql`username = lower(username)`)
+		check('users_username_normalized', sql`username = lower(username)`),
+		check('users_company_gold_nonnegative', sql`${table.companyGold} >= 0`),
+		check('users_company_gold_safe_integer', sql`${table.companyGold} <= 9007199254740991`),
+		check('users_brutality_range', sql`${table.brutality} between 1 and 5`),
+		check('users_debauchery_range', sql`${table.debauchery} between 1 and 5`)
 	]
 );
 
@@ -95,6 +103,7 @@ export const characters = pgTable(
 		name: text('name').notNull(),
 		title: text('title').notNull().default(''),
 		description: text('description').notNull().default(''),
+		imageUrl: text('image_url'),
 		age: integer('age').notNull(),
 		height: text('height').notNull().default(''),
 		build: text('build').notNull().default(''),
@@ -105,12 +114,30 @@ export const characters = pgTable(
 		mind: integer('mind').notNull(),
 		spirit: integer('spirit').notNull(),
 		persistentGold: integer('persistent_gold').notNull().default(0),
+		gearBonus: integer('gear_bonus').notNull().default(0),
+		maxStartRoom: integer('max_start_room').notNull().default(1),
 		furthestFloor: integer('furthest_floor').notNull().default(0),
 		active: boolean('active').notNull().default(false),
 		createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 		updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 	},
-	(table) => [index('characters_user_id_idx').on(table.userId)]
+	(table) => [
+		index('characters_user_id_idx').on(table.userId),
+		check('characters_age_range', sql`${table.age} between 1 and 999`),
+		check('characters_level_range', sql`${table.level} between 1 and 10`),
+		check('characters_body_range', sql`${table.body} between 0 and 4`),
+		check('characters_mind_range', sql`${table.mind} between 0 and 4`),
+		check('characters_spirit_range', sql`${table.spirit} between 0 and 4`),
+		check('characters_gear_bonus_range', sql`${table.gearBonus} between 0 and 3`),
+		check('characters_max_start_room_range', sql`${table.maxStartRoom} between 1 and 1000`),
+		check(
+			'characters_valid_stat_allocation',
+			sql`${table.body} + ${table.mind} + ${table.spirit} = ${table.level}
+				and ((${table.level} < 10 and greatest(${table.body}, ${table.mind}, ${table.spirit}) <= 3)
+				or (${table.level} = 10 and greatest(${table.body}, ${table.mind}, ${table.spirit}) <= 4
+				and ((${table.body} = 4)::int + (${table.mind} = 4)::int + (${table.spirit} = 4)::int) <= 1))`
+		)
+	]
 );
 
 export const monsters = pgTable('monsters', {

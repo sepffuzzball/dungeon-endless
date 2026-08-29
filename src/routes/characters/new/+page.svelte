@@ -13,16 +13,16 @@
 	}
 </script>
 
-<svelte:head><title>Create a hero | Dungeon Endless</title></svelte:head>
+<svelte:head><title>Create a character | Dungeon of the Endless</title></svelte:head>
 <header class="page-header">
 	<div>
 		<div class="eyebrow">A new name in the chronicle</div>
 		<h1>Shape a wayfarer.</h1>
 		<p class="lede">
-			Choose an identity and one defining strength. Expedition levels grant temporary allocations.
+			Choose an identity and one defining strength. Progression belongs to this character.
 		</p>
 	</div>
-	<a class="btn btn-secondary" href="/characters">Back to company</a>
+	<a class="btn btn-secondary" href="/characters">Back to Characters</a>
 </header>
 {#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 {#if !data.species.length || !data.callings.length}
@@ -62,7 +62,7 @@
 						id="age"
 						name="age"
 						type="number"
-						min="18"
+						min="1"
 						max="999"
 						value="28"
 						required
@@ -83,6 +83,17 @@
 				>Description <span class="field-hint">Appearance, history, manner, or ambitions.</span
 				><textarea id="description" name="description" maxlength="2000"></textarea></label
 			>
+			<label for="image-url"
+				>Portrait URL <span class="field-hint"
+					>Optional http or https image, rendered only in your browser.</span
+				><input
+					id="image-url"
+					name="imageUrl"
+					type="url"
+					maxlength="2048"
+					placeholder="https://example.com/portrait.jpg"
+				/></label
+			>
 		</section>
 		<section class="card burgundy">
 			<div class="card-head">
@@ -93,8 +104,8 @@
 				<span class="badge gold">{remaining} remaining</span>
 			</div>
 			<p class="text-dim">
-				A level-1 hero has exactly one point across Body, Mind, and Spirit. Each expedition's
-				selected level supplies a new temporary allocation without rewriting this profile.
+				A level-1 hero has exactly one point across Body, Mind, and Spirit. Each expedition's future
+				levels add one permanent point to this profile.
 			</p>
 			{#each [{ key: 'body', label: 'Body', note: 'Force, endurance, and steel.' }, { key: 'mind', label: 'Mind', note: 'Lore, cunning, and precision.' }, { key: 'spirit', label: 'Spirit', note: 'Resolve, instinct, and sorcery.' }] as stat}
 				<div class="card" style="margin-bottom:.75rem">

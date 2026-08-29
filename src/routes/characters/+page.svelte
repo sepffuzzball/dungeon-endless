@@ -1,198 +1,186 @@
 <script lang="ts">
-	import SliderField from '$lib/components/SliderField.svelte';
-	import { untrack } from 'svelte';
 	let { data, form } = $props();
-	let selected = $state(
-		untrack(
-			() =>
-				data.characters.find((character) => !character.activeRunId)?.id ?? data.characters[0]?.id
-		)
-	);
-	let brutality = $state(3);
-	let debauchery = $state(2);
-	let startRoom = $state(1);
-	let level = $state(1);
-	let gear = $state(0);
-	let body = $state(1);
-	let mind = $state(0);
-	let spirit = $state(0);
-	const allocated = $derived(body + mind + spirit);
-	const allocationRemaining = $derived(level - allocated);
-	const allocationValid = $derived(
-		allocationRemaining === 0 &&
-			(level < 10
-				? Math.max(body, mind, spirit) <= 3
-				: Math.max(body, mind, spirit) <= 4 &&
-					[body, mind, spirit].filter((value) => value === 4).length <= 1)
-	);
-	function setLevel(next: number) {
-		level = next;
-		body = Math.min(next, next === 10 ? 4 : 3);
-		mind = Math.min(next - body, 3);
-		spirit = next - body - mind;
-	}
-	const hero = $derived(data.characters.find((character) => character.id === selected));
+	let failedImages = $state<Record<string, boolean>>({});
 </script>
 
-<svelte:head><title>Company | Dungeon Endless</title></svelte:head>
+<svelte:head><title>Characters | Dungeon of the Endless</title></svelte:head>
 <header class="page-header">
 	<div>
-		<div class="eyebrow">The lantern company</div>
-		<h1>{data.companyName}: choose who descends.</h1>
-		<p class="lede">Heroes keep what they earn, but the dungeon keeps its own account.</p>
+		<div class="eyebrow">{data.companyName}</div>
+		<h1>Characters</h1>
+		<p class="lede">
+			Shape lasting heroes, improve their company equipment, and prepare the next descent.
+		</p>
 	</div>
-	<a class="btn" href="/characters/new">Create a hero</a>
+	<div class="actions">
+		<div class="wallet"><small>Company wallet</small><strong>{data.companyGold} gold</strong></div>
+		<a class="btn" href="/characters/new">Create a character</a>
+	</div>
 </header>
 {#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
-<div class="grid-2">
-	<section class="stack" aria-label="Characters">
+{#if form?.success}<div class="alert alert-info" role="status">{form.success}</div>{/if}
+
+{#if data.characters.length === 0}
+	<section class="card">
+		<h2>No characters yet</h2>
+		<p>Create your first wayfarer to enter the dungeon.</p>
+	</section>
+{:else}
+	<div class="character-grid">
 		{#each data.characters as character (character.id)}
-			<button
-				type="button"
-				class="card character-card"
-				style="text-align:left; color:inherit; background:{selected === character.id
-					? 'linear-gradient(145deg,#4a2930,#1d2028)'
-					: ''}"
-				onclick={() => (selected = character.id)}
-				aria-pressed={selected === character.id}
-			>
-				<div class="card-head">
-					<div class="character-monogram">{character.name[0]}</div>
-					{#if character.activeRunId}<span class="badge green">In progress</span>{/if}
+			<article class="card character-card">
+				<div class="portrait">
+					{#if character.imageUrl && !failedImages[character.id]}
+						<img
+							src={character.imageUrl}
+							alt={`Portrait of ${character.name}`}
+							loading="lazy"
+							referrerpolicy="no-referrer"
+							width="640"
+							height="480"
+							onerror={() => (failedImages = { ...failedImages, [character.id]: true })}
+						/>
+					{:else}<span aria-hidden="true">{character.name.slice(0, 1).toUpperCase()}</span>{/if}
 				</div>
-				<div>
-					<h2>{character.name}</h2>
-					<div class="text-muted">
-						{character.title} / {character.species}
-						{character.className}
+				<div class="card-head">
+					<div>
+						<h2>{character.name}</h2>
+						<p class="text-muted">
+							{character.title || 'Untitled'} / {character.species}
+							{character.className}
+						</p>
 					</div>
+					{#if character.activeRunId}<span class="badge green">In progress</span>{/if}
 				</div>
 				<div class="mini-stats">
 					<span><small>Level</small>{character.level}</span><span
-						><small>Gold</small>{character.gold}</span
-					><span><small>Deepest</small>{character.furthestDepth}</span>
+						><small>Gear</small>+{character.gearBonus}</span
+					><span><small>Start room</small>{character.maxStartRoom}</span>
 				</div>
-			</button>
+				<div class="mini-stats">
+					<span><small>Body</small>{character.body}</span><span
+						><small>Mind</small>{character.mind}</span
+					><span><small>Spirit</small>{character.spirit}</span>
+				</div>
+				<div class="actions character-links">
+					<a class="btn btn-secondary" href={`/characters/${character.id}/edit`}>Edit</a>
+					<a
+						class="btn"
+						href={character.activeRunId
+							? `/play/${character.activeRunId}`
+							: `/dungeon?character=${character.id}`}
+						>{character.activeRunId ? 'Continue Expedition' : 'Enter the Dungeon'}</a
+					>
+				</div>
+				<section class="upgrades" aria-label={`Upgrades for ${character.name}`}>
+					<h3>Progression</h3>
+					{#if character.activeRunId}<p class="field-hint">
+							Upgrades are locked during an active expedition.
+						</p>{/if}
+					<form method="POST" action="?/levelUp" class="upgrade-row">
+						<input type="hidden" name="characterId" value={character.id} />
+						<label for={`stat-${character.id}`}>Next stat</label><select
+							id={`stat-${character.id}`}
+							name="stat"
+							disabled={!!character.activeRunId || character.level >= 10}
+							><option value="body" disabled={character.body >= (character.level === 9 ? 4 : 3)}
+								>Body</option
+							><option value="mind" disabled={character.mind >= (character.level === 9 ? 4 : 3)}
+								>Mind</option
+							><option value="spirit" disabled={character.spirit >= (character.level === 9 ? 4 : 3)}
+								>Spirit</option
+							></select
+						>
+						<button
+							type="submit"
+							class="btn-sm"
+							disabled={!!character.activeRunId || character.level >= 10}
+							>Level up / {character.level < 10 ? (character.level + 1) * 10 : 'max'} gold</button
+						>
+					</form>
+					<div class="upgrade-pair">
+						<form method="POST" action="?/gearUp">
+							<input type="hidden" name="characterId" value={character.id} /><button
+								type="submit"
+								class="btn-sm btn-secondary"
+								disabled={!!character.activeRunId || character.gearBonus >= 3}
+								>Gear +1 / {[25, 75, 225][character.gearBonus] ?? 'max'} gold</button
+							>
+						</form>
+						<form method="POST" action="?/roomUp">
+							<input type="hidden" name="characterId" value={character.id} /><button
+								type="submit"
+								class="btn-sm btn-secondary"
+								disabled={!!character.activeRunId || character.maxStartRoom >= 1000}
+								>Start room +1 / 5 gold</button
+							>
+						</form>
+					</div>
+				</section>
+			</article>
 		{/each}
-	</section>
-	<section class="card forest">
-		<div class="eyebrow">Expedition charter</div>
-		<h2>{hero?.activeRunId ? 'A descent is underway' : `Prepare ${hero?.name ?? 'a hero'}`}</h2>
-		{#if hero?.activeRunId}
-			<p class="lede">
-				This hero already carries the lantern below. Continue their story before beginning another.
-			</p>
-			<a class="btn" href={`/play/${hero.activeRunId}`}>Continue descent</a>
-		{:else}
-			<form method="POST" action="?/start">
-				<input type="hidden" name="characterId" value={selected} />
-				<SliderField
-					label="Brutality"
-					name="brutality"
-					bind:value={brutality}
-					hint="From tense peril to merciless encounters."
-				/>
-				<SliderField
-					label="Debauchery"
-					name="debauchery"
-					bind:value={debauchery}
-					hint="Controls the maturity of generated themes."
-				/>
-				<div class="form-grid">
-					<label for="level"
-						>Run level<select
-							id="level"
-							name="level"
-							value={level}
-							onchange={(event) => setLevel(Number(event.currentTarget.value))}
-							><option value={1}>Level 1 / free</option><option value={2}>Level 2 / 20 gold</option
-							><option value={3}>Level 3 / 30 gold</option><option value={4}
-								>Level 4 / 40 gold</option
-							><option value={5}>Level 5 / 50 gold</option><option value={6}
-								>Level 6 / 60 gold</option
-							><option value={7}>Level 7 / 70 gold</option><option value={8}
-								>Level 8 / 80 gold</option
-							><option value={9}>Level 9 / 90 gold</option><option value={10}
-								>Level 10 / 100 gold</option
-							></select
-						></label
-					>
-					<label for="start-room"
-						>Starting room<select id="start-room" name="startRoom" bind:value={startRoom}
-							><option value={1}>Threshold / free</option><option value={5}
-								>Depth 5 / 20 gold</option
-							><option value={10}>Depth 10 / 45 gold</option></select
-						></label
-					>
-					<label for="gear"
-						>Provisioned gear<select id="gear" name="gear" bind:value={gear}
-							><option value={0}>Traveler's kit / free</option><option value={1}
-								>Tempered kit +1 / 25 gold</option
-							><option value={2}>Relic kit +2 / 75 gold</option><option value={3}
-								>Mythic kit +3 / 225 gold</option
-							></select
-						></label
-					>
-				</div>
-				<fieldset class="allocation">
-					<legend>Expedition stats</legend>
-					<p class="text-dim">
-						Allocate exactly {level}
-						{level === 1 ? 'point' : 'points'} for this expedition. Each stat is capped at 3 through level
-						9; level 10 permits one stat at 4.
-					</p>
-					<div class="form-grid">
-						{#each [{ key: 'body', label: 'Body' }, { key: 'mind', label: 'Mind' }, { key: 'spirit', label: 'Spirit' }] as stat}
-							<label for={`run-${stat.key}`}
-								>{stat.label}
-								<select
-									id={`run-${stat.key}`}
-									name={stat.key}
-									value={{ body, mind, spirit }[stat.key as 'body' | 'mind' | 'spirit']}
-									onchange={(event) => {
-										const value = Number(event.currentTarget.value);
-										if (stat.key === 'body') body = value;
-										else if (stat.key === 'mind') mind = value;
-										else spirit = value;
-									}}
-								>
-									{#each [0, 1, 2, 3, 4].slice(0, level === 10 ? 5 : 4) as value}<option
-											{value}
-											disabled={value === 4 &&
-												((stat.key !== 'body' && body === 4) ||
-													(stat.key !== 'mind' && mind === 4) ||
-													(stat.key !== 'spirit' && spirit === 4))}>{value}</option
-										>{/each}
-								</select>
-							</label>
-						{/each}
-					</div>
-					<div
-						class:green={allocationValid}
-						class:red={!allocationValid}
-						class="badge"
-						aria-live="polite"
-					>
-						{allocationRemaining >= 0
-							? `${allocationRemaining} remaining`
-							: `${Math.abs(allocationRemaining)} over budget`}
-					</div>
-				</fieldset>
-				<button type="submit" disabled={!allocationValid}>Sign the charter</button>
-			</form>
-		{/if}
-	</section>
-</div>
+	</div>
+{/if}
 
 <style>
-	.allocation {
+	.character-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+		gap: 1rem;
+	}
+	.character-card {
+		overflow: hidden;
+	}
+	.portrait {
+		aspect-ratio: 4/3;
+		margin: -1.25rem -1.25rem 1rem;
+		background: linear-gradient(145deg, #4a2930, #171a20);
+		display: grid;
+		place-items: center;
+		font-size: 4rem;
+		color: var(--gold);
+	}
+	.portrait img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.wallet {
+		padding: 0.65rem 1rem;
 		border: 1px solid var(--border);
 		border-radius: 0.5rem;
-		margin: 1rem 0;
-		padding: 1rem;
+		display: flex;
+		flex-direction: column;
 	}
-	.allocation legend {
-		font-weight: 700;
-		padding: 0 0.35rem;
+	.wallet small {
+		color: var(--muted);
+	}
+	.wallet strong {
+		font-size: 1.2rem;
+	}
+	.character-links {
+		margin: 1rem 0;
+	}
+	.upgrades {
+		border-top: 1px solid var(--border);
+		padding-top: 1rem;
+	}
+	.upgrade-row {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 0.5rem;
+		align-items: center;
+	}
+	.upgrade-row button {
+		grid-column: 1/-1;
+	}
+	.upgrade-pair {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		margin-top: 0.5rem;
+	}
+	.upgrade-pair form {
+		margin: 0;
 	}
 </style>

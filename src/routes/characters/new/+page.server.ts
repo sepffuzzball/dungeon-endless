@@ -4,6 +4,7 @@ import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import { callingDefinitions, characters, speciesDefinitions } from '$lib/server/schema';
 import { BUILD_OPTIONS, HEIGHT_OPTIONS } from '$lib/types';
+import { validCharacterAge, validImageUrl } from '$lib/server/game';
 import { and, eq } from 'drizzle-orm';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -44,6 +45,7 @@ export const actions: Actions = {
 		const name = text(form, 'name');
 		const title = text(form, 'title');
 		const description = text(form, 'description');
+		const imageUrl = text(form, 'imageUrl');
 		const species = text(form, 'species');
 		const className = text(form, 'className');
 		const age = integer(form, 'age');
@@ -63,9 +65,13 @@ export const actions: Actions = {
 			return fail(400, { error: 'Description must be no more than 2000 characters.' });
 		if (!species) return fail(400, { error: 'Choose an enabled species.' });
 		if (!className) return fail(400, { error: 'Choose an enabled calling.' });
-		if (age === null || age < 18 || age > 999) {
-			return fail(400, { error: 'Age must be a whole number between 18 and 999.' });
+		if (age === null || !validCharacterAge(age)) {
+			return fail(400, { error: 'Age must be a whole number between 1 and 999.' });
 		}
+		if (imageUrl && !validImageUrl(imageUrl))
+			return fail(400, {
+				error: 'Image URL must be an http or https URL of at most 2048 characters.'
+			});
 		if (!height || !HEIGHT_OPTIONS.includes(height as (typeof HEIGHT_OPTIONS)[number])) {
 			return fail(400, { error: 'Choose an allowed height.' });
 		}
@@ -110,6 +116,7 @@ export const actions: Actions = {
 			name,
 			title,
 			description,
+			imageUrl: imageUrl || null,
 			age,
 			height,
 			build,

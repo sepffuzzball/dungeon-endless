@@ -1,6 +1,8 @@
-# Dungeon Endless
+# Dungeon of the Endless
 
-Dungeon Endless is a persistent, single-player text dungeon built with SvelteKit, PostgreSQL, Drizzle ORM, and optional OpenAI-compatible language-model endpoints. The server owns room generation, dice, health, inventory, settlement, and achievements. Models provide bounded interpretation and flavor; deterministic fallbacks keep the game playable without a model.
+Dungeon of the Endless is a persistent, single-player text dungeon built with SvelteKit, PostgreSQL, Drizzle ORM, and optional OpenAI-compatible language-model endpoints. The server owns room generation, dice, health, inventory, settlement, and achievements. Models provide bounded interpretation and flavor; deterministic fallbacks keep the game playable without a model.
+
+Licensed third-party font attribution and immutable asset provenance are documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Local setup
 
@@ -70,8 +72,9 @@ Administrators create accounts and can disable users or reset passwords. Disabli
 - `/login`: cookie-session authentication.
 - `/change-password`: required password replacement for accounts marked by an administrator.
 - `/`: owned-character dashboard, active runs, records, and achievements.
-- `/characters` and `/characters/new`: create characters, buy a run charter, or continue an active run.
-- `/settings`: update the authenticated user's company name.
+- `/characters`, `/characters/new`, and `/characters/[characterId]/edit`: create and edit character profiles, buy permanent progression, or continue an active run.
+- `/dungeon`: choose an owned character and unlocked starting room, or resume an active expedition.
+- `/settings`: update the company name and future-expedition brutality/debauchery settings.
 - `/play/[runId]`: view an owned active or finished run in the chronological expedition terminal. `?/act` resolves one room; `?/abandon` settles and closes an active run.
 - `/play/[runId]/stream`: authenticated, owner-scoped SSE for one exact turn or room-entry narration UUID.
 - `/editor`: editor/admin monster, trap, species, and calling definitions used by future rooms and characters. Existing snapshots retain their saved text.
@@ -93,23 +96,23 @@ JavaScript-enhanced actions return durable narration IDs for streaming. Ordinary
 
 ## Core game rules
 
-### Characters and charters
+### Characters, progression, and expeditions
 
 - A character profile starts with exactly one point split across Body, Mind, and Spirit, each 0 or 1. Species and calling choices are editor-managed snapshots; build and height use fixed choices, and profiles can include a 2000-character description.
-- Every expedition receives a temporary allocation totaling its selected level. Each stat is capped at 3 for levels 1 through 9; level 10 permits at most one stat at 4. Maximum HP at run start is `5 + allocated Body`.
-- Run level is 1 through 10. Level 1 is free; levels 2 through 10 cost `20 + 10 * (level - 2)` gold.
-- Starting-room cost is `5 * (room - 1)` gold.
-- Provisioned gear tiers 0 through 3 cost 0, 25, 75, and 225 gold. Each item grants +1 to every primary stat while carried.
+- Character level and stats are permanent. Each level adds one stat point; stats are capped at 3 through level 9, while level 10 permits at most one stat at 4. Reaching levels 2 through 10 costs 20 through 100 company gold.
+- Permanent company gear tiers +1 through +3 cost 25, 75, and 225 company gold. Gear is materialized into each new run as explicitly non-sellable inventory.
+- Starting-room access costs 5 company gold per one-room increase, to a maximum of 1000. Starting an expedition itself is free and may use any room from 1 through that character's unlocked maximum.
+- New rules-version-2 expeditions snapshot the character's level, stats, gear, starting room, and company settings. Later edits and upgrades cannot change an active run. Legacy rules-version-1 runs continue using their saved charter metadata, inventory, HP, and settings.
 - The play loop uses `5 + run level` base defense and `Body + run level` base attack. Magic gear can add to attack, defense, a primary stat, or a skill. Primary gear bonuses are capped at +5.
 
 ### Sliders
 
-Brutality and debauchery each range from 1 through 5 in the charter form. They direct generated prose, not mechanics, rolls, or rewards.
+Brutality and debauchery each range from 1 through 5 in company settings. They are copied into new runs and direct generated prose, not mechanics, rolls, or rewards.
 
 - Brutality: soft, fair, grim, harsh, then merciless narrative treatment.
 - Debauchery: chaste, suggestive, mildly explicit, explicit, then very explicit adult themes.
 
-Debauchery above 1 requires a character aged at least 18 and is checked both when starting and when acting. Adult directives require clearly adult, consenting participants and prohibit coercion, sexualized defeat, minors, and ambiguous ages. See the limitations below: model configuration and operator moderation remain important.
+Character age is profile information from 1 through 999 and does not alter company settings or run access. Operators remain responsible for model configuration, moderation, and any legally required age gate.
 
 ### Rooms, checks, and rewards
 
@@ -118,11 +121,15 @@ Debauchery above 1 requires a character aged at least 18 and is checked both whe
 - Combat uses attack against monster defense. A skill approach uses its governing primary stat and relevant gear. Trap difficulty is `5 + floor(room / 5)` and uses the trap's skill unless the action is interpreted as combat.
 - A failed monster, boss, or trap check costs 1 HP. A rest room requires no check and heals 1 HP. A draught drawn as a reward heals 1 HP immediately, up to maximum HP.
 - Treasure requires no check, has three generated rewards, and always yields one draw. A boss has six and yields two draws on a successful combat result. Non-draught rewards enter run inventory.
-- On defeat or abandonment, inventory is settled exactly once: magic items sell for deterministic 1d2 gold, valuables for deterministic 1d6, and draughts for zero. Proceeds become persistent character gold and inventory is cleared.
+- On defeat or abandonment, inventory is settled exactly once: sellable magic items yield deterministic 1d2 gold, valuables deterministic 1d6, draughts zero, and persistent gear zero. Proceeds enter the company wallet and inventory is cleared.
 
 The run seed, room number, turn sequence, and purpose label seed every room, check, reward, and settlement stream. Complete charter metadata and the current room are persisted at run start, including a pending initial room-entry snapshot. Each accepted action inserts one immutable pending turn at `version + 1` and, on survival, the next pending room-entry snapshot in the same transaction. An expected version rejects stale forms and a UUID action key makes retries idempotent. The run row is locked during resolution, so the browser cannot choose a roll, spend, reward, or duplicate settlement. Narration and later summaries run outside gameplay transactions and cannot change these immutable snapshots or outcomes.
 
-Achievements are inserted and awarded idempotently for first entry, a character run's first defeat by the dungeon, reaching room 10, and accumulating 100 or 1000 persistent gold. Starting at room 10 or beyond records that depth and awards the corresponding achievement immediately.
+Achievements are inserted and awarded idempotently for first entry, a character run's first defeat by the dungeon, reaching room 10, and accumulating 100 or 1000 company gold. Starting at room 10 or beyond records that depth and awards the corresponding achievement immediately.
+
+### Progression migration cutover
+
+Migration `0002` is a single-writer cutover: stop all application writers, apply the migration once, then deploy the matching application build. It atomically initializes each company wallet from the sum of its characters' legacy `persistent_gold`, reconciles character level to the existing stat total when that total is 1 through 10, validates persistent allocation constraints, and seeds wallet achievements. Legacy character gold is intentionally left unchanged and frozen for rollback/read compatibility; it is no longer authoritative and the application never reads or writes it for economy operations.
 
 ## Docker Compose
 
@@ -173,7 +180,7 @@ Restore into an empty, compatible database with `pg_restore --clean --if-exists 
 - Cookie authentication uses opaque tokens whose SHA-256 hashes are stored. State-changing forms enforce same-origin Origin/Referer checks. Deploy only behind HTTPS and a trusted proxy.
 - Model endpoint URL policy rejects disallowed literal and resolved addresses but native `fetch` cannot pin the validated address, leaving residual DNS-rebinding risk between validation and connection. Keep private/insecure endpoint allowances disabled and enforce network-level egress controls that block private, link-local, metadata, and other sensitive ranges.
 - User, editor, and model text is rendered as escaped Svelte text; raw HTML is not used. Prompt delimiters reduce prompt-injection impact, while authoritative rules remain server-side.
-- Generated text can still be inaccurate, offensive, or outside the requested tone. Endpoint operators must select appropriate models, apply provider controls, moderate custom editor content, and provide any legally required age gate. The character-age check is a game constraint, not identity or age verification.
+- Generated text can still be inaccurate, offensive, or outside the requested tone. Endpoint operators must select appropriate models, apply provider controls, moderate custom editor content, and provide any legally required age gate. Character age is profile-only and is not an access or content gate; it is not identity or age verification.
 - The application does not claim compliance with a particular jurisdiction, child-safety regime, privacy standard, or content-rating system. Review those obligations before public deployment.
 - Do not log model secrets, session cookies, database URLs, unredacted private content, or player adult-content prompts. Configure infrastructure logs accordingly.
 

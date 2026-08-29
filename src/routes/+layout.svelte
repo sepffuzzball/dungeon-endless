@@ -5,7 +5,7 @@
 </script>
 
 <svelte:head>
-	<title>Dungeon Endless</title>
+	<title>Dungeon of the Endless</title>
 </svelte:head>
 
 <AppShell user={data.user}>

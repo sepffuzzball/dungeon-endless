@@ -8,13 +8,14 @@ import { requireUser } from '$lib/server/authorization';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import {
+	checkedCompanyGoldAdd,
 	deriveStats,
 	generateRoom,
 	mapActionIntent,
 	normalizeActionIntent,
 	resolveEncounter,
 	resolveRunBaseStats,
-	sellValue,
+	settlementGold,
 	toTurnIntent
 } from '$lib/server/game';
 import {
@@ -26,7 +27,6 @@ import {
 	suggestActions
 } from '$lib/server/llm';
 import { buildSystemPrompt } from '$lib/server/prompts';
-import { createRng } from '$lib/server/rng';
 import {
 	achievements,
 	characters,
@@ -36,7 +36,8 @@ import {
 	runs,
 	traps,
 	turns,
-	userAchievements
+	userAchievements,
+	users
 } from '$lib/server/schema';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -54,9 +55,9 @@ function formInteger(form: FormData, name: string): number | null {
 
 function systemPrompt(run: typeof runs.$inferSelect, character: typeof characters.$inferSelect) {
 	return buildSystemPrompt({
-		// Stored charter sliders are 1..5; prompt directives are indexed 0..4.
-		brutality: run.brutality - 1,
-		debauchery: run.debauchery - 1,
+		// Stored charter sliders are persisted as 1..5 and passed through as-is.
+		brutality: run.brutality,
+		debauchery: run.debauchery,
 		adventurer: {
 			name: character.name,
 			title: character.title,
@@ -65,11 +66,6 @@ function systemPrompt(run: typeof runs.$inferSelect, character: typeof character
 			level: run.meta.startLevel ?? run.roomData.run?.startLevel ?? character.level
 		}
 	});
-}
-
-function settlementGold(run: typeof runs.$inferSelect): number {
-	const rng = createRng(run.seed, run.roomNumber, run.version, 'settlement');
-	return run.inventory.reduce((total, item) => total + sellValue(item, rng), 0);
 }
 
 async function award(
@@ -112,6 +108,11 @@ export const load: PageServerLoad = async (event) => {
 
 	const owned = await ownedRun(parsedRunId.data, user.id);
 	if (!owned) throw error(404, 'Run not found');
+	const [account] = await db
+		.select({ companyGold: users.companyGold })
+		.from(users)
+		.where(eq(users.id, user.id))
+		.limit(1);
 
 	const [recentTurns, recentEntries] = await Promise.all([
 		db
@@ -202,7 +203,7 @@ export const load: PageServerLoad = async (event) => {
 			spirit: stats.spirit,
 			defense: stats.defense,
 			attackBonus: stats.attackBonus,
-			gold: owned.character.persistentGold
+			gold: Number(account?.companyGold ?? 0)
 		},
 		terminal: [
 			...recentTurns.map((turn) => ({
@@ -247,7 +248,8 @@ export const load: PageServerLoad = async (event) => {
 		actionKeys: Array.from({ length: suggestions.length + 1 }, () => randomUUID()),
 		inventory: owned.run.inventory,
 		summary: owned.run.summary,
-		characterName: owned.character.name
+		characterName: owned.character.name,
+		companyGold: Number(account?.companyGold ?? 0)
 	};
 
 	return data;
@@ -277,10 +279,6 @@ export const actions: Actions = {
 		if (preflight.run.status !== 'active') {
 			return fail(409, { error: 'This run is already finished.' });
 		}
-		if (preflight.run.debauchery > 1 && preflight.character.age < 18) {
-			return fail(400, { error: 'Adult content requires a hero aged 18 or older.' });
-		}
-
 		const mapped = enhanced
 			? await (async () => {
 					const endpoints = await db
@@ -420,13 +418,14 @@ export const actions: Actions = {
 				if (!character) {
 					return { kind: 'failure', status: 404, message: 'Hero not found.' };
 				}
-				if (run.debauchery > 1 && character.age < 18) {
-					return {
-						kind: 'failure',
-						status: 400,
-						message: 'Adult content requires a hero aged 18 or older.'
-					};
-				}
+				// Gameplay lock order: run, owned character, then user.
+				const [account] = await tx
+					.select()
+					.from(users)
+					.where(eq(users.id, user.id))
+					.limit(1)
+					.for('update');
+				if (!account) return { kind: 'failure', status: 404, message: 'Company not found.' };
 
 				const sequence = run.version + 1;
 				const roomSnapshot = structuredClone(run.roomData);
@@ -476,16 +475,24 @@ export const actions: Actions = {
 				let roomEntryId: string | null = null;
 				if (encounter.outcome.hpAfter <= 0) {
 					const completedRun = { ...run, inventory, version: sequence };
-					const gold = settlementGold(completedRun);
-					const [updatedCharacter] = await tx
+					const gold = settlementGold(
+						completedRun.inventory,
+						completedRun.seed,
+						completedRun.roomNumber,
+						completedRun.version
+					);
+					await tx
 						.update(characters)
 						.set({
-							persistentGold: sql`${characters.persistentGold} + ${gold}`,
 							furthestFloor: sql`greatest(${characters.furthestFloor}, ${run.roomNumber})`,
 							updatedAt: new Date()
 						})
-						.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)))
-						.returning({ gold: characters.persistentGold });
+						.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
+					const companyGold = checkedCompanyGoldAdd(account.companyGold, gold);
+					await tx
+						.update(users)
+						.set({ companyGold, updatedAt: new Date() })
+						.where(eq(users.id, user.id));
 					await tx
 						.update(runs)
 						.set({
@@ -500,7 +507,7 @@ export const actions: Actions = {
 					await award(tx, user.id, {
 						firstDefeat: true,
 						roomNumber: run.roomNumber,
-						gold: updatedCharacter.gold
+						gold: companyGold
 					});
 				} else {
 					const [monsterRows, trapRows] = await Promise.all([
@@ -555,7 +562,7 @@ export const actions: Actions = {
 					await award(tx, user.id, {
 						firstDefeat: false,
 						roomNumber: nextNumber,
-						gold: character.persistentGold
+						gold: account.companyGold
 					});
 				}
 
@@ -606,17 +613,27 @@ export const actions: Actions = {
 					.limit(1)
 					.for('update');
 				if (!character) return { status: 404, message: 'Hero not found.' };
+				const [account] = await tx
+					.select()
+					.from(users)
+					.where(eq(users.id, user.id))
+					.limit(1)
+					.for('update');
+				if (!account) return { status: 404, message: 'Company not found.' };
 
-				const gold = settlementGold(run);
-				const [updatedCharacter] = await tx
+				const gold = settlementGold(run.inventory, run.seed, run.roomNumber, run.version);
+				await tx
 					.update(characters)
 					.set({
-						persistentGold: sql`${characters.persistentGold} + ${gold}`,
 						furthestFloor: sql`greatest(${characters.furthestFloor}, ${run.roomNumber})`,
 						updatedAt: new Date()
 					})
-					.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)))
-					.returning({ gold: characters.persistentGold });
+					.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
+				const companyGold = checkedCompanyGoldAdd(account.companyGold, gold);
+				await tx
+					.update(users)
+					.set({ companyGold, updatedAt: new Date() })
+					.where(eq(users.id, user.id));
 				await tx
 					.update(runs)
 					.set({ status: 'abandoned', finishedAt: new Date(), inventory: [] })
@@ -624,7 +641,7 @@ export const actions: Actions = {
 				await award(tx, user.id, {
 					firstDefeat: false,
 					roomNumber: run.roomNumber,
-					gold: updatedCharacter.gold
+					gold: companyGold
 				});
 				return null;
 			});

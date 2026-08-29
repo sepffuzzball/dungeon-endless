@@ -2,19 +2,28 @@ import { describe, it, expect } from 'vitest';
 import {
 	BOSS_TARGET_BONUS,
 	FALLBACK_MONSTERS,
+	MAX_COMPANY_GOLD,
 	TRAP_DC_BASE,
+	checkedCompanyGoldAdd,
 	deriveStats,
+	canIncreaseStat,
+	gearUpgradeCost,
 	generateRewardPool,
 	generateRoom,
 	isValidNewRunMeta,
+	levelUpgradeCost,
 	mapActionIntent,
 	normalizeActionIntent,
 	resolveEncounter,
 	resolveRunBaseStats,
+	provisionPersistentGear,
+	settlementGold,
 	sellValue,
 	skillPrimary,
 	toTurnIntent,
-	validateStatAllocation
+	validateStatAllocation,
+	validCharacterAge,
+	validImageUrl
 } from '../src/lib/server/game';
 import { createRng } from '../src/lib/server/rng';
 import type { DerivedStats, InventoryItem, RoomSnapshot, TurnIntent } from '../src/lib/types';
@@ -218,6 +227,89 @@ describe('per-run stat allocation', () => {
 				legacy
 			)
 		).toEqual(legacy);
+	});
+});
+
+describe('persistent progression', () => {
+	it('uses the exact level and gear upgrade costs and rejects bounds', () => {
+		expect(levelUpgradeCost(2)).toBe(20);
+		expect(levelUpgradeCost(10)).toBe(100);
+		expect(levelUpgradeCost(1)).toBeNull();
+		expect(levelUpgradeCost(11)).toBeNull();
+		expect([1, 2, 3].map(gearUpgradeCost)).toEqual([25, 75, 225]);
+		expect(gearUpgradeCost(4)).toBeNull();
+	});
+
+	it('permits only stat increments that produce a valid next-level allocation', () => {
+		expect(canIncreaseStat(1, 1, 0, 0, 'mind')).toBe(true);
+		expect(canIncreaseStat(3, 3, 0, 0, 'body')).toBe(false);
+		expect(canIncreaseStat(9, 3, 3, 3, 'body')).toBe(true);
+		expect(canIncreaseStat(9, 4, 3, 2, 'mind')).toBe(false);
+	});
+
+	it('accepts age 1 and rejects ages outside the profile range', () => {
+		expect(validCharacterAge(1)).toBe(true);
+		expect(validCharacterAge(999)).toBe(true);
+		expect(validCharacterAge(0)).toBe(false);
+		expect(validCharacterAge(1.5)).toBe(false);
+	});
+
+	it('accepts only bounded browser-renderable http image URLs', () => {
+		expect(validImageUrl('https://example.com/portrait.jpg')).toBe(true);
+		expect(validImageUrl('http://example.com/a.png')).toBe(true);
+		expect(validImageUrl('javascript:alert(1)')).toBe(false);
+		expect(validImageUrl('https://')).toBe(false);
+	});
+
+	it('materializes non-sellable persistent gear and excludes it from defeat or abandon settlement', () => {
+		const gear = provisionPersistentGear(2);
+		expect(gear.every((item) => item.sellable === false)).toBe(true);
+		const inventory: InventoryItem[] = [...gear, { kind: 'valuable', name: 'Sellable prize' }];
+		const withGear = settlementGold(inventory, 'run', 5, 2);
+		const prizeOnly = settlementGold([inventory[2]], 'run', 5, 2);
+		expect(withGear).toBe(prizeOnly);
+	});
+
+	it('keeps a valid run snapshot authoritative after mutable character stats change', () => {
+		const meta = { startLevel: 2, allocatedBody: 1, allocatedMind: 1, allocatedSpirit: 0 };
+		expect(resolveRunBaseStats(meta, { body: 3, mind: 3, spirit: 3 })).toEqual({
+			body: 1,
+			mind: 1,
+			spirit: 0
+		});
+	});
+});
+
+describe('checkedCompanyGoldAdd', () => {
+	it('returns the exact safe sum at the boundary of the safe range', () => {
+		expect(checkedCompanyGoldAdd(0, 0)).toBe(0);
+		expect(checkedCompanyGoldAdd(1, MAX_COMPANY_GOLD - 1)).toBe(MAX_COMPANY_GOLD);
+		expect(checkedCompanyGoldAdd(MAX_COMPANY_GOLD, 0)).toBe(MAX_COMPANY_GOLD);
+	});
+
+	it('rejects a sum that would exceed the safe range', () => {
+		expect(() => checkedCompanyGoldAdd(MAX_COMPANY_GOLD, 1)).toThrow(
+			new RegExp(`exceeds the safe limit ${MAX_COMPANY_GOLD}`)
+		);
+		expect(() => checkedCompanyGoldAdd(MAX_COMPANY_GOLD - 1, 2)).toThrow();
+	});
+
+	it('rejects negative inputs', () => {
+		expect(() => checkedCompanyGoldAdd(-1, 5)).toThrow(
+			/Company gold must be a nonnegative safe integer/
+		);
+		expect(() => checkedCompanyGoldAdd(5, -1)).toThrow(
+			/Settlement gold must be a nonnegative safe integer/
+		);
+	});
+
+	it('rejects non-integer inputs', () => {
+		expect(() => checkedCompanyGoldAdd(1.5, 5)).toThrow(
+			/Company gold must be a nonnegative safe integer/
+		);
+		expect(() => checkedCompanyGoldAdd(5, 2.5)).toThrow(
+			/Settlement gold must be a nonnegative safe integer/
+		);
 	});
 });
 

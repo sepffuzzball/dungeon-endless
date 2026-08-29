@@ -16,10 +16,24 @@
 		hint?: string;
 		value: number;
 	} = $props();
+	const inputId = $derived(`slider-${name ?? label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`);
+	const hintId = $derived(`${inputId}-hint`);
+	const outputId = $derived(`${inputId}-output`);
 </script>
 
-<label class="slider-field">
-	<span class="slider-heading"><span>{label}</span><output>{value}</output></span>
-	<input type="range" {name} {min} {max} {step} bind:value aria-label={label} />
-	{#if hint}<span class="field-hint">{hint}</span>{/if}
-</label>
+<div class="slider-field">
+	<label class="slider-heading" for={inputId}
+		><span>{label}</span><output id={outputId} for={inputId}>{value}</output></label
+	>
+	<input
+		id={inputId}
+		type="range"
+		{name}
+		{min}
+		{max}
+		{step}
+		bind:value
+		aria-describedby={hint ? hintId : undefined}
+	/>
+	{#if hint}<span class="field-hint" id={hintId}>{hint}</span>{/if}
+</div>

@@ -5,6 +5,9 @@ import type { InventoryItem, RoomSnapshot, TurnOutcome } from '$lib/types';
  * string lists so they are easy to edit in one place. Player, editor and
  * summary text is always delimited as untrusted and is told it can never
  * alter the rules.
+ *
+ * Levels are the public persisted 1-based values (1..5); brutalityPrompt and
+ * debaucheryPrompt map them onto the 0-based arrays below.
  */
 
 export const BRUTALITY_PROMPTS: readonly string[] = [
@@ -23,18 +26,23 @@ export const DEBAUCHERY_PROMPTS: readonly string[] = [
 	'Very explicit. Unrestrained adult consensual themes are permitted. All participants must be clearly adult and consenting; no coercion, no sexualized defeat, no minors, and no ambiguous ages.'
 ];
 
+/**
+ * Maps a public persisted level (1-based) to an array index: level 1 -> 0,
+ * level 2 -> 1, ... level N -> N-1. Clamps <=1 / non-finite to the first
+ * directive and > length to the last.
+ */
 function clampLevel(level: number, length: number): number {
 	if (!Number.isFinite(level)) return 0;
-	const floor = Math.floor(level);
-	return Math.max(0, Math.min(length - 1, floor));
+	const index = Math.floor(level) - 1;
+	return Math.max(0, Math.min(length - 1, index));
 }
 
-/** Returns the brutality directive for a level, clamped to the valid range. */
+/** Returns the brutality directive for a 1-based level (1..5), clamped to the valid range. */
 export function brutalityPrompt(level: number): string {
 	return BRUTALITY_PROMPTS[clampLevel(level, BRUTALITY_PROMPTS.length)] ?? BRUTALITY_PROMPTS[0];
 }
 
-/** Returns the debauchery directive for a level, clamped to the valid range. */
+/** Returns the debauchery directive for a 1-based level (1..5), clamped to the valid range. */
 export function debaucheryPrompt(level: number): string {
 	return DEBAUCHERY_PROMPTS[clampLevel(level, DEBAUCHERY_PROMPTS.length)] ?? DEBAUCHERY_PROMPTS[0];
 }

@@ -23,6 +23,9 @@ function toSafeUser(row: User): SafeUser {
 		id: row.id,
 		username: row.username,
 		companyName: row.companyName,
+		companyGold: row.companyGold,
+		brutality: row.brutality,
+		debauchery: row.debauchery,
 		role: row.role,
 		mustChangePassword: row.mustChangePassword,
 		createdAt: row.createdAt.toISOString()

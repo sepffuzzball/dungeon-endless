@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { CharacterCard, DashboardAchievement, RunSummary } from '$lib/types';
 import { requireUser } from '$lib/server/authorization';
 import { db } from '$lib/server/db';
-import { achievements, characters, runs, userAchievements } from '$lib/server/schema';
+import { achievements, characters, runs, userAchievements, users } from '$lib/server/schema';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async (event) => {
@@ -26,7 +26,9 @@ export const load: PageServerLoad = async (event) => {
 		body: row.body,
 		mind: row.mind,
 		spirit: row.spirit,
-		gold: row.persistentGold,
+		imageUrl: row.imageUrl,
+		gearBonus: row.gearBonus,
+		maxStartRoom: row.maxStartRoom,
 		furthestDepth: row.furthestFloor,
 		activeRunId: activeRunByCharacter.get(row.id)
 	}));
@@ -55,10 +57,7 @@ export const load: PageServerLoad = async (event) => {
 	}));
 
 	const [charAgg] = await db
-		.select({
-			furthestFloor: sql<number>`coalesce(max(${characters.furthestFloor}), 0)::int`,
-			gold: sql<number>`coalesce(sum(${characters.persistentGold}), 0)::int`
-		})
+		.select({ furthestFloor: sql<number>`coalesce(max(${characters.furthestFloor}), 0)::int` })
 		.from(characters)
 		.where(eq(characters.userId, user.id));
 
@@ -69,6 +68,11 @@ export const load: PageServerLoad = async (event) => {
 		})
 		.from(runs)
 		.where(eq(runs.userId, user.id));
+	const [account] = await db
+		.select({ companyGold: users.companyGold })
+		.from(users)
+		.where(eq(users.id, user.id))
+		.limit(1);
 
 	const achievementRows = await db
 		.select({
@@ -97,7 +101,7 @@ export const load: PageServerLoad = async (event) => {
 		activeRuns,
 		records: {
 			furthestFloor: Number(charAgg?.furthestFloor ?? 0),
-			gold: Number(charAgg?.gold ?? 0),
+			gold: Number(account?.companyGold ?? 0),
 			runs: Number(runAgg?.runs ?? 0),
 			defeats: Number(runAgg?.defeats ?? 0)
 		},

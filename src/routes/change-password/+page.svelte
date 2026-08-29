@@ -2,7 +2,7 @@
 	let { form } = $props();
 </script>
 
-<svelte:head><title>Change password | Dungeon Endless</title></svelte:head>
+<svelte:head><title>Change password | Dungeon of the Endless</title></svelte:head>
 
 <section style="max-width: 560px; margin: min(8vh, 5rem) auto">
 	<div class="card burgundy">

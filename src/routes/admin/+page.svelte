@@ -5,7 +5,7 @@
 	let { data, form } = $props<{ data: PageData; form: FormResult | null }>();
 </script>
 
-<svelte:head><title>Stewardship | Dungeon Endless</title></svelte:head>
+<svelte:head><title>Stewardship | Dungeon of the Endless</title></svelte:head>
 
 <header class="page-header">
 	<div>

@@ -20,6 +20,98 @@ import { createRng, rollCheck, type RollCheckResult, type Rng } from './rng';
 
 export type PrimaryStat = 'body' | 'mind' | 'spirit';
 
+export const MAX_CHARACTER_LEVEL = 10;
+export const MAX_GEAR_BONUS = 3;
+export const MAX_START_ROOM = 1000;
+export const GEAR_UPGRADE_COSTS = [25, 75, 225] as const;
+
+/** Upper bound for company gold as a Drizzle bigint number; matches Number.MAX_SAFE_INTEGER. */
+export const MAX_COMPANY_GOLD = Number.MAX_SAFE_INTEGER;
+
+/**
+ * Adds settlement gold to the current company wallet with checked arithmetic.
+ * Both inputs must be nonnegative safe integers and the result must stay within
+ * the Drizzle bigint-number safe range; otherwise a clear error is thrown.
+ */
+export function checkedCompanyGoldAdd(current: number, settlement: number): number {
+	if (!Number.isSafeInteger(current) || current < 0) {
+		throw new Error(`Company gold must be a nonnegative safe integer, got ${current}.`);
+	}
+	if (!Number.isSafeInteger(settlement) || settlement < 0) {
+		throw new Error(`Settlement gold must be a nonnegative safe integer, got ${settlement}.`);
+	}
+	const next = current + settlement;
+	if (!Number.isSafeInteger(next) || next > MAX_COMPANY_GOLD) {
+		throw new Error(
+			`Company gold ${current} + ${settlement} exceeds the safe limit ${MAX_COMPANY_GOLD}.`
+		);
+	}
+	return next;
+}
+
+export function levelUpgradeCost(targetLevel: number): number | null {
+	return Number.isInteger(targetLevel) && targetLevel >= 2 && targetLevel <= MAX_CHARACTER_LEVEL
+		? targetLevel * 10
+		: null;
+}
+
+export function gearUpgradeCost(targetBonus: number): number | null {
+	return Number.isInteger(targetBonus) && targetBonus >= 1 && targetBonus <= MAX_GEAR_BONUS
+		? GEAR_UPGRADE_COSTS[targetBonus - 1]
+		: null;
+}
+
+export function validCharacterAge(age: number): boolean {
+	return Number.isInteger(age) && age >= 1 && age <= 999;
+}
+
+export function validImageUrl(value: string): boolean {
+	if (value.length > 2048) return false;
+	try {
+		const parsed = new URL(value);
+		return (
+			(parsed.protocol === 'http:' || parsed.protocol === 'https:') && Boolean(parsed.hostname)
+		);
+	} catch {
+		return false;
+	}
+}
+
+export function canIncreaseStat(
+	level: number,
+	body: number,
+	mind: number,
+	spirit: number,
+	stat: PrimaryStat
+): boolean {
+	const next = { body, mind, spirit };
+	next[stat] += 1;
+	return validateStatAllocation(level + 1, next.body, next.mind, next.spirit);
+}
+
+export function provisionPersistentGear(gearBonus: number): InventoryItem[] {
+	return Array.from({ length: gearBonus }, (_, index) => ({
+		kind: 'magic' as const,
+		name: `Company gear +${index + 1}`,
+		description: 'Persistent company equipment. It returns to the vault after the expedition.',
+		stat: 'general' as const,
+		sellable: false
+	}));
+}
+
+export function settlementGold(
+	inventory: readonly InventoryItem[],
+	seed: string,
+	roomNumber: number,
+	version: number
+): number {
+	const rng = createRng(seed, roomNumber, version, 'settlement');
+	return inventory.reduce(
+		(total, item) => total + (item.sellable === false ? 0 : sellValue(item, rng)),
+		0
+	);
+}
+
 /** Maps each skill to the primary stat that governs it. */
 export const SKILL_PRIMARY: Record<SkillName, PrimaryStat> = {
 	Athletics: 'body',

@@ -30,8 +30,8 @@ const OVERALL_WAIT_MS = 120_000;
 
 function prompt(run: typeof runs.$inferSelect, character: typeof characters.$inferSelect) {
 	return buildSystemPrompt({
-		brutality: run.brutality - 1,
-		debauchery: run.debauchery - 1,
+		brutality: run.brutality,
+		debauchery: run.debauchery,
 		adventurer: {
 			name: character.name,
 			title: character.title,

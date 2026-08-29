@@ -13,15 +13,15 @@ import {
 	uniqueIndex,
 	uuid
 } from 'drizzle-orm/pg-core';
-import type {
-	InventoryItem,
-	RoomSnapshot,
-	RollRecord,
-	RunMeta,
-	TurnIntent,
-	TurnOutcome
-} from '$lib/types';
-import { SEEDED_SPECIES } from '$lib/types';
+import {
+	SEEDED_SPECIES,
+	type InventoryItem,
+	type RoomSnapshot,
+	type RollRecord,
+	type RunMeta,
+	type TurnIntent,
+	type TurnOutcome
+} from '../types';
 
 export const roleEnum = pgEnum('user_role', ['user', 'editor', 'admin']);
 export const runStatusEnum = pgEnum('run_status', ['active', 'defeated', 'abandoned']);

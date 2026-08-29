@@ -1,7 +1,8 @@
 <script lang="ts">
 	import StatCard from '$lib/components/StatCard.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import Portrait from '$lib/components/Portrait.svelte';
 	let { data } = $props();
-	let failedImages = $state<Record<string, boolean>>({});
 	const unlockedAchievements = $derived(
 		data.achievements.filter((achievement) => achievement.unlocked)
 	);
@@ -22,13 +23,13 @@
 			Your characters wait at the threshold, where every descent writes a different ending.
 		</p>
 	</div>
-	<div class="actions">
+	<div class="actions header-actions">
+		<a class="btn" href="/dungeon">Enter the Dungeon</a>
 		<a class="btn btn-secondary" href="/characters">View characters</a><a
-			class="btn"
+			class="btn btn-secondary"
 			href="/characters/new">Create a hero</a
 		>
 	</div>
-	<a class="btn" href="/dungeon">Enter the Dungeon</a>
 </header>
 
 <section class="stat-grid" aria-label="Career records">
@@ -39,7 +40,7 @@
 </section>
 
 {#if data.activeRuns.length}
-	<section class="card forest" style="margin-top: 1rem">
+	<section class="card forest section-gap">
 		<div class="card-head">
 			<div>
 				<div class="eyebrow">Expedition in progress</div>
@@ -55,7 +56,7 @@
 	</section>
 {/if}
 
-<div class="grid-2" style="margin-top: 1rem">
+<div class="grid-2 section-gap chronicle-grid">
 	<section class="card">
 		<div class="card-head">
 			<div>
@@ -64,24 +65,10 @@
 			</div>
 			<a href="/characters">All characters</a>
 		</div>
-		<div class="grid-2">
+		<div class="character-overview">
 			{#each data.characters as character (character.id)}
-				<article class="character-card">
-					{#if character.imageUrl && !failedImages[character.id]}
-						<div class="portrait-thumb">
-							<img
-								src={character.imageUrl}
-								alt={`Portrait of ${character.name}`}
-								loading="lazy"
-								referrerpolicy="no-referrer"
-								width="56"
-								height="56"
-								onerror={() => (failedImages = { ...failedImages, [character.id]: true })}
-							/>
-						</div>
-					{:else}
-						<div class="character-monogram" aria-hidden="true">{character.name.slice(0, 1)}</div>
-					{/if}
+				<article class="list-row character-row">
+					<Portrait src={character.imageUrl} name={character.name} size="chronicle" />
 					<div>
 						<h3>{character.name}</h3>
 						<div class="text-muted">{character.title}</div>
@@ -94,6 +81,14 @@
 					</div>
 				</article>
 			{/each}
+			{#if data.characters.length === 0}
+				<EmptyState
+					title="No characters yet"
+					message="Create a wayfarer to begin the chronicle."
+					href="/characters/new"
+					actionLabel="Create a hero"
+				/>
+			{/if}
 		</div>
 	</section>
 	<section class="card burgundy">
@@ -111,7 +106,7 @@
 				{/each}
 			</ul>
 		{:else}
-			<p class="text-muted">No marks have been earned yet. The stone waits.</p>
+			<EmptyState title="No marks yet" message="The stone waits for your first earned milestone." />
 		{/if}
 	</section>
 </div>

@@ -19,7 +19,7 @@
 {#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 {#if form?.success}<div class="alert alert-info" role="status">{form.success}</div>{/if}
 
-<div class="grid-2">
+<div class="grid-2 admin-create-grid">
 	<section class="card">
 		<div class="eyebrow">Access</div>
 		<h2>Create a user</h2>
@@ -144,7 +144,7 @@
 								<div class="actions">
 									<form class="row-action" method="POST" action="?/toggle-user">
 										<input type="hidden" name="id" value={user.id} />
-										<button class="btn-outline" type="submit"
+										<button class="btn-outline table-action" type="submit"
 											>{user.status === 'active' ? 'Disable' : 'Enable'}</button
 										>
 									</form>
@@ -162,12 +162,15 @@
 											autocomplete="new-password"
 											placeholder="New password"
 										/>
-										<button class="btn-outline" type="submit">Reset</button>
+										<button class="btn-outline table-action" type="submit">Reset</button>
 									</form>
 								</div>
 							</td>
 						</tr>
 					{/each}
+					{#if data.users.length === 0}<tr
+							><td colspan="5" class="table-empty">No user accounts found.</td></tr
+						>{/if}
 				</tbody>
 			</table>
 		</div>
@@ -202,7 +205,7 @@
 								<div class="actions">
 									<form class="row-action" method="POST" action="?/toggle-endpoint">
 										<input type="hidden" name="id" value={endpoint.id} />
-										<button class="btn-outline" type="submit"
+										<button class="btn-outline table-action" type="submit"
 											>{endpoint.enabled ? 'Disable' : 'Enable'}</button
 										>
 									</form>
@@ -285,6 +288,9 @@
 							</td>
 						</tr>
 					{/each}
+					{#if data.endpoints.length === 0}<tr
+							><td colspan="5" class="table-empty">No LLM endpoints configured.</td></tr
+						>{/if}
 				</tbody>
 			</table>
 		</div>
@@ -294,6 +300,11 @@
 <style>
 	.records {
 		margin-top: 1rem;
+	}
+	.table-empty {
+		padding: 2rem;
+		color: var(--muted);
+		text-align: center;
 	}
 	.actions {
 		display: grid;
@@ -321,5 +332,19 @@
 	.reset-action input {
 		min-height: 36px;
 		padding: 0.4rem 0.65rem;
+	}
+	@media (max-width: 1100px) {
+		.admin-create-grid,
+		.records {
+			grid-template-columns: 1fr;
+		}
+	}
+	@media (max-width: 620px) {
+		.actions {
+			min-width: 10rem;
+		}
+		.endpoint-editor form {
+			min-width: min(20rem, 82vw);
+		}
 	}
 </style>

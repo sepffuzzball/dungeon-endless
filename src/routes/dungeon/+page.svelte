@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
+	import Wallet from '$lib/components/Wallet.svelte';
 	let { data, form } = $props();
 	let selected = $state(untrack(() => data.selectedCharacterId));
 	let startRoom = $state(1);
@@ -15,16 +17,19 @@
 			Choose a company character and the deepest unlocked room. There is no entry fee.
 		</p>
 	</div>
-	<div class="wallet"><small>Company wallet</small><strong>{data.companyGold} gold</strong></div>
+	<Wallet gold={data.companyGold} />
 </header>
 {#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 <div class="grid-2">
 	<section class="card">
 		<div class="eyebrow">Characters</div>
 		<h2>Who carries the lantern?</h2>
-		{#if !data.characters.length}<p>
-				No characters are ready. <a href="/characters/new">Create one first.</a>
-			</p>{:else}<div class="roster">
+		{#if !data.characters.length}<EmptyState
+				title="No characters are ready"
+				message="Create a wayfarer before crossing the threshold."
+				href="/characters/new"
+				actionLabel="Create a character"
+			/>{:else}<div class="roster">
 				{#each data.characters as item}<button
 						type="button"
 						class:chosen={selected === item.id}
@@ -72,13 +77,6 @@
 </div>
 
 <style>
-	.wallet {
-		padding: 0.65rem 1rem;
-		border: 1px solid var(--border);
-		border-radius: 0.5rem;
-		display: flex;
-		flex-direction: column;
-	}
 	.roster {
 		display: grid;
 		gap: 0.6rem;
@@ -88,12 +86,22 @@
 		display: grid;
 		grid-template-columns: 1fr auto;
 		gap: 0.25rem;
+		min-height: 64px;
+		background: rgba(7, 11, 17, 0.38);
+		border-color: var(--border);
+		color: var(--parchment);
+		box-shadow: none;
+		font-family: inherit;
+		font-size: 0.9rem;
+		letter-spacing: 0;
 	}
 	.roster button span:not(.badge) {
 		color: var(--muted);
 		grid-column: 1;
 	}
 	.roster button.chosen {
-		outline: 2px solid var(--gold);
+		border-color: var(--gold);
+		background: rgba(84, 37, 48, 0.55);
+		box-shadow: inset 3px 0 var(--gold);
 	}
 </style>

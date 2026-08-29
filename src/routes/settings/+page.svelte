@@ -16,36 +16,53 @@
 {#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
 {#if form?.success}<div class="alert alert-info" role="status">{form.success}</div>{/if}
 <section class="card settings-card">
-	<h2>Company profile</h2>
 	<form method="POST">
-		<label for="company-name"
-			>Company name<input
-				id="company-name"
-				name="companyName"
-				value={data.companyName}
-				minlength="1"
-				maxlength="80"
-				required
-			/><span class="field-hint">1 to 80 characters.</span></label
-		>
-		<SliderField
-			label="Brutality"
-			name="brutality"
-			bind:value={brutality}
-			hint="Sets the narrative severity for future expeditions, from restrained to merciless."
-		/>
-		<SliderField
-			label="Debauchery"
-			name="debauchery"
-			bind:value={debauchery}
-			hint="Sets the maturity of generated themes for future expeditions."
-		/>
+		<div class="subsection">
+			<div class="eyebrow">Identity</div>
+			<h2>Company profile</h2>
+			<p class="text-muted">The name shown across your chronicle and company records.</p>
+			<label for="company-name"
+				>Company name<input
+					id="company-name"
+					name="companyName"
+					value={data.companyName}
+					minlength="1"
+					maxlength="80"
+					required
+				/><span class="field-hint">1 to 80 characters.</span></label
+			>
+		</div>
+		<div class="subsection narrative-controls">
+			<div class="eyebrow">Narrative controls</div>
+			<h2>Expedition tone</h2>
+			<p class="text-muted">These settings apply to future expeditions.</p>
+			<SliderField
+				label="Brutality"
+				name="brutality"
+				bind:value={brutality}
+				hint="Sets the narrative severity for future expeditions, from restrained to merciless."
+			/>
+			<SliderField
+				label="Debauchery"
+				name="debauchery"
+				bind:value={debauchery}
+				hint="Sets the maturity of generated themes for future expeditions."
+			/>
+		</div>
 		<button type="submit">Save settings</button>
 	</form>
 </section>
 
 <style>
 	.settings-card {
-		max-width: 42rem;
+		max-width: 48rem;
+	}
+	.subsection + .subsection {
+		margin-top: 0.5rem;
+		padding-top: 1.5rem;
+		border-top: 1px solid var(--border);
+	}
+	.subsection h2 {
+		margin-top: 0.15rem;
 	}
 </style>

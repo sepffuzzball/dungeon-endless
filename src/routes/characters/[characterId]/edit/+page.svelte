@@ -1,6 +1,6 @@
 <script lang="ts">
+	import Portrait from '$lib/components/Portrait.svelte';
 	let { data, form } = $props();
-	let imageFailed = $state(false);
 	let retirementName = $state('');
 	let retirementAcknowledged = $state(false);
 </script>
@@ -28,20 +28,9 @@
 		<a class="btn btn-secondary" href="/characters">Return to active characters</a>
 	</section>
 {:else}
-	<form method="POST" action="?/save" class="grid-2">
-		<section class="card">
-			<div class="portrait">
-				{#if data.character.imageUrl && !imageFailed}<img
-						src={data.character.imageUrl}
-						alt={`Portrait of ${data.character.name}`}
-						loading="lazy"
-						referrerpolicy="no-referrer"
-						width="640"
-						height="480"
-						onerror={() => (imageFailed = true)}
-					/>{:else}<span aria-hidden="true">{data.character.name.slice(0, 1).toUpperCase()}</span
-					>{/if}
-			</div>
+	<form method="POST" action="?/save" class="card edit-form">
+		<section class="form-section identity-fields">
+			<Portrait src={data.character.imageUrl} name={data.character.name} size="profile" />
 			<label for="name"
 				>Name<input
 					id="name"
@@ -71,7 +60,7 @@
 				/></label
 			>
 		</section>
-		<section class="card burgundy">
+		<section class="form-section profile-fields">
 			<div class="form-grid">
 				<label for="age"
 					>Age<input
@@ -163,20 +152,16 @@
 {/if}
 
 <style>
-	.portrait {
-		aspect-ratio: 4/3;
-		background: linear-gradient(145deg, #4a2930, #171a20);
-		display: grid;
-		place-items: center;
-		font-size: 4rem;
-		color: var(--gold);
-		margin-bottom: 1rem;
-		overflow: hidden;
+	.edit-form {
+		max-width: 70rem;
+		margin-inline: auto;
+		grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
+		align-items: start;
+		gap: 1.5rem;
 	}
-	.portrait img {
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
+	.profile-fields {
+		padding-left: 1.5rem;
+		border-left: 1px solid var(--border);
 	}
 	.page-alert {
 		margin-bottom: 1rem;
@@ -211,6 +196,14 @@
 		color: var(--parchment);
 	}
 	@media (max-width: 900px) {
+		.edit-form {
+			grid-template-columns: 1fr;
+		}
+		.profile-fields {
+			padding: 1.5rem 0 0;
+			border-left: 0;
+			border-top: 1px solid var(--border);
+		}
 		.retired-state,
 		.danger-zone {
 			align-items: stretch;

@@ -86,7 +86,7 @@
 
 <div class="bestiary-workspace">
 	<aside
-		class="create-panel card"
+		class="create-panel panel"
 		class:burgundy={data.tab === 'monsters'}
 		class:forest={data.tab === 'traps'}
 	>
@@ -265,7 +265,7 @@
 			</label>
 			<div class="filter-actions">
 				<button type="submit">Apply</button>
-				<a class="btn-outline" href={`/editor?tab=${data.tab}`}>Clear</a>
+				<a class="btn btn-outline" href={`/editor?tab=${data.tab}`}>Clear</a>
 			</div>
 		</form>
 		<p class="result-count">
@@ -509,15 +509,15 @@
 			</div>
 			<nav class="pagination" aria-label="Bestiary results pages">
 				{#if data.page > 1}
-					<a class="btn-outline" href={pageHref(data.page - 1)} rel="prev">Previous</a>
+					<a class="btn btn-outline" href={pageHref(data.page - 1)} rel="prev">Previous</a>
 				{:else}
-					<span class="btn-outline disabled" aria-disabled="true">Previous</span>
+					<span class="btn btn-outline disabled" aria-disabled="true">Previous</span>
 				{/if}
 				<span>Page {data.page} of {data.totalPages}</span>
 				{#if data.page < data.totalPages}
-					<a class="btn-outline" href={pageHref(data.page + 1)} rel="next">Next</a>
+					<a class="btn btn-outline" href={pageHref(data.page + 1)} rel="next">Next</a>
 				{:else}
-					<span class="btn-outline disabled" aria-disabled="true">Next</span>
+					<span class="btn btn-outline disabled" aria-disabled="true">Next</span>
 				{/if}
 			</nav>
 		{/if}
@@ -682,14 +682,15 @@
 	.summary-copy strong {
 		color: var(--parchment);
 		font-size: 1rem;
+		overflow-wrap: anywhere;
+		word-break: break-word;
 	}
 	.record-meta {
-		overflow: hidden;
 		color: var(--muted);
 		font-size: 0.72rem;
 		line-height: 1.35;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
+		word-break: break-word;
 	}
 	.record > form {
 		margin: 0 1rem 1rem;
@@ -753,9 +754,6 @@
 		}
 		.record summary {
 			align-items: flex-start;
-		}
-		.record-meta {
-			max-width: 62vw;
 		}
 	}
 </style>

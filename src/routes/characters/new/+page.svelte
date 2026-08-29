@@ -34,8 +34,8 @@
 				: 'species or callings'} are configured. Ask an editor to add or enable an option.
 	</div>
 {:else}
-	<form method="POST" class="grid-2">
-		<section class="card">
+	<form method="POST" class="card character-form">
+		<section class="form-section">
 			<div class="eyebrow">Identity</div>
 			<h2>Name the legend</h2>
 			<div class="form-grid">
@@ -95,7 +95,7 @@
 				/></label
 			>
 		</section>
-		<section class="card burgundy">
+		<section class="form-section attributes-section">
 			<div class="card-head">
 				<div>
 					<div class="eyebrow">Nature</div>
@@ -108,7 +108,7 @@
 				levels add one permanent point to this profile.
 			</p>
 			{#each [{ key: 'body', label: 'Body', note: 'Force, endurance, and steel.' }, { key: 'mind', label: 'Mind', note: 'Lore, cunning, and precision.' }, { key: 'spirit', label: 'Spirit', note: 'Resolve, instinct, and sorcery.' }] as stat}
-				<div class="card" style="margin-bottom:.75rem">
+				<div class="stat-allocation-row">
 					<div class="card-head">
 						<div>
 							<h3>{stat.label}</h3>
@@ -120,7 +120,7 @@
 								class="btn-sm btn-secondary"
 								onclick={() => adjust(stat.key as 'body' | 'mind' | 'spirit', -1)}
 								aria-label={`Decrease ${stat.label}`}>-</button
-							><strong style="font-size:1.5rem"
+							><strong class="allocation-value"
 								>{{ body, mind, spirit }[stat.key as 'body' | 'mind' | 'spirit']}</strong
 							><button
 								type="button"
@@ -141,3 +141,47 @@
 		</section>
 	</form>
 {/if}
+
+<style>
+	.character-form {
+		max-width: 68rem;
+		margin-inline: auto;
+	}
+	.form-section + .form-section {
+		margin-top: 0.5rem;
+		padding-top: 1.5rem;
+		border-top: 1px solid var(--border);
+	}
+	.form-section h2 {
+		margin-bottom: 1rem;
+	}
+	.stat-allocation-row {
+		padding: 0.8rem 1rem;
+		margin-bottom: 0.65rem;
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		background: rgba(7, 11, 17, 0.3);
+	}
+	.stat-allocation-row .card-head {
+		margin: 0;
+	}
+	.allocation-value {
+		min-width: 1.5rem;
+		text-align: center;
+		color: var(--amber);
+		font-size: 1.5rem;
+	}
+	@media (min-width: 901px) {
+		.character-form {
+			grid-template-columns: minmax(0, 1.35fr) minmax(19rem, 0.75fr);
+			align-items: start;
+			gap: 1.5rem;
+		}
+		.form-section + .form-section {
+			margin: 0;
+			padding: 0 0 0 1.5rem;
+			border-top: 0;
+			border-left: 1px solid var(--border);
+		}
+	}
+</style>

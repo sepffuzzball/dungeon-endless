@@ -178,60 +178,65 @@
 {/if}
 
 <div class="play-layout">
-	<aside class="card run-panel" aria-label="Run status and inventory">
-		<div class="eyebrow">Wayfarer</div>
-		<h2>{data.character.name}</h2>
-		<p class="text-muted">
-			{data.character.title} / Level {data.character.level}
-			{data.character.className}
-		</p>
-		<div class="card-head vitality-head">
-			<strong>Vitality</strong><span>{data.character.hp} / {data.character.maxHp}</span>
-		</div>
-		<div class="hp-bar" aria-label={`Health ${data.character.hp} of ${data.character.maxHp}`}>
-			<div style={`width:${Math.max(0, (data.character.hp / data.character.maxHp) * 100)}%`}></div>
-		</div>
-		<div class="mini-stats play-stats">
-			<span><small>Body</small>{data.character.body}</span><span
-				><small>Mind</small>{data.character.mind}</span
-			><span><small>Spirit</small>{data.character.spirit}</span>
-		</div>
-		<dl class="run-facts">
-			<div>
-				<dt>Defense</dt>
-				<dd>{data.character.defense}</dd>
+	<details class="card run-panel" aria-label="Run status and inventory" open>
+		<summary>Run status and inventory</summary>
+		<div class="run-panel-content">
+			<div class="eyebrow">Wayfarer</div>
+			<h2>{data.character.name}</h2>
+			<p class="text-muted">
+				{data.character.title} / Level {data.character.level}
+				{data.character.className}
+			</p>
+			<div class="card-head vitality-head">
+				<strong>Vitality</strong><span>{data.character.hp} / {data.character.maxHp}</span>
 			</div>
-			<div>
-				<dt>Attack</dt>
-				<dd>+{data.character.attackBonus}</dd>
+			<div class="hp-bar" aria-label={`Health ${data.character.hp} of ${data.character.maxHp}`}>
+				<div
+					style={`width:${Math.max(0, (data.character.hp / data.character.maxHp) * 100)}%`}
+				></div>
 			</div>
-			<div>
-				<dt>Company gold</dt>
-				<dd>{data.companyGold}</dd>
+			<div class="mini-stats play-stats">
+				<span><small>Body</small>{data.character.body}</span><span
+					><small>Mind</small>{data.character.mind}</span
+				><span><small>Spirit</small>{data.character.spirit}</span>
 			</div>
-		</dl>
-		<div class="inventory-head">
-			<div class="eyebrow">Inventory</div>
-			<span>{data.inventory.length}</span>
+			<dl class="run-facts">
+				<div>
+					<dt>Defense</dt>
+					<dd>{data.character.defense}</dd>
+				</div>
+				<div>
+					<dt>Attack</dt>
+					<dd>+{data.character.attackBonus}</dd>
+				</div>
+				<div>
+					<dt>Company gold</dt>
+					<dd>{data.companyGold}</dd>
+				</div>
+			</dl>
+			<div class="inventory-head">
+				<div class="eyebrow">Inventory</div>
+				<span>{data.inventory.length}</span>
+			</div>
+			{#if data.inventory.length === 0}
+				<p class="inventory-empty">Nothing carried. Only nerve and torchlight remain.</p>
+			{:else}
+				<ul class="inventory-list">
+					{#each data.inventory as item, index (`${item.name}-${index}`)}
+						<li>
+							<div><strong>{item.name}</strong><span class="badge gold">{item.kind}</span></div>
+							<p>{item.description || 'No description recorded.'}</p>
+							<div class="item-meta">
+								{#if item.stat}<span>Effect: {item.stat}{item.skill ? ` / ${item.skill}` : ''}</span
+									>{/if}
+								{#if item.value !== undefined}<span>Value: {item.value}</span>{/if}
+							</div>
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		</div>
-		{#if data.inventory.length === 0}
-			<p class="inventory-empty">Nothing carried. Only nerve and torchlight remain.</p>
-		{:else}
-			<ul class="inventory-list">
-				{#each data.inventory as item, index (`${item.name}-${index}`)}
-					<li>
-						<div><strong>{item.name}</strong><span class="badge gold">{item.kind}</span></div>
-						<p>{item.description || 'No description recorded.'}</p>
-						<div class="item-meta">
-							{#if item.stat}<span>Effect: {item.stat}{item.skill ? ` / ${item.skill}` : ''}</span
-								>{/if}
-							{#if item.value !== undefined}<span>Value: {item.value}</span>{/if}
-						</div>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</aside>
+	</details>
 
 	<main class="stack play-main">
 		<article class="card room-card">

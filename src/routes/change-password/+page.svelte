@@ -4,10 +4,10 @@
 
 <svelte:head><title>Change password | Dungeon of the Endless</title></svelte:head>
 
-<section style="max-width: 560px; margin: min(8vh, 5rem) auto">
-	<div class="card burgundy">
+<section class="auth-layout auth-layout-wide">
+	<div class="card burgundy auth-card">
 		<div class="eyebrow">Secure the archive</div>
-		<h1 style="font-size: 3rem">Choose a new password.</h1>
+		<h1>Choose a new password.</h1>
 		<p class="lede">Before you continue, replace the temporary password for this account.</p>
 
 		{#if form?.error}<div class="alert alert-error" role="alert">{form.error}</div>{/if}
@@ -47,7 +47,7 @@
 					required
 				/>
 			</label>
-			<button type="submit">Seal the new password</button>
+			<button class="btn-block" type="submit">Seal the new password</button>
 		</form>
 	</div>
 </section>

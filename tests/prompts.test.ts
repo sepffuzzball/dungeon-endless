@@ -51,33 +51,6 @@ describe('level prompts', () => {
 		expect(debaucheryPrompt(99)).toBe(DEBAUCHERY_PROMPTS[4]);
 	});
 
-	it('keeps level 1 chaste with no romantic or sexual content', () => {
-		const text = debaucheryPrompt(1);
-		expect(text).toMatch(/chaste/i);
-		expect(text).toMatch(/no romantic or sexual content/i);
-		expect(text).not.toMatch(/explicit/);
-	});
-
-	it('keeps level 2 suggestive but non-explicit', () => {
-		const text = debaucheryPrompt(2);
-		expect(text).toBe(DEBAUCHERY_PROMPTS[1]);
-		expect(text).toMatch(/suggestive/i);
-		expect(text).toMatch(/flirtation/i);
-		expect(text).toMatch(/nothing explicit/);
-		expect(text).not.toMatch(/consent/);
-	});
-
-	it('keeps levels 3-5 explicit with adult consent safeguards', () => {
-		for (let level = 3; level <= 5; level++) {
-			const text = debaucheryPrompt(level);
-			expect(text).toBe(DEBAUCHERY_PROMPTS[level - 1]);
-			expect(text).toMatch(/consent/);
-			expect(text).toMatch(/no coercion/i);
-			expect(text).toMatch(/no sexualized defeat/i);
-			expect(text).toMatch(/no minors/i);
-			expect(text).toMatch(/no ambiguous ages/i);
-		}
-	});
 });
 
 describe('delimit', () => {

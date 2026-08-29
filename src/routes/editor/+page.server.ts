@@ -1,5 +1,5 @@
 import { fail } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { and, count, eq, ilike, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { requireRole } from '$lib/server/authorization';
 import { assertSameOrigin } from '$lib/server/csrf';
@@ -41,6 +41,16 @@ const definitionSchema = z.object({
 });
 
 const idSchema = z.string().uuid();
+const tabSchema = z.enum(['monsters', 'traps', 'species', 'callings']).catch('monsters');
+const querySchema = z.string().trim().max(100).catch('');
+const statusSchema = z.enum(['all', 'enabled', 'disabled']).catch('all');
+const pageSchema = z
+	.string()
+	.regex(/^[1-9]\d*$/)
+	.transform(Number)
+	.refine(Number.isSafeInteger)
+	.catch(1);
+const pageSize = 25;
 
 function authorize(event: RequestEvent): void {
 	requireRole(event, ['editor', 'admin']);
@@ -66,13 +76,142 @@ function isUniqueViolation(error: unknown): boolean {
 
 export const load: PageServerLoad = async (event) => {
 	authorize(event);
-	const [monsterRows, trapRows, speciesRows, callingRows] = await Promise.all([
-		db.select().from(monsters).orderBy(monsters.name),
-		db.select().from(traps).orderBy(traps.name),
-		db.select().from(speciesDefinitions).orderBy(speciesDefinitions.name),
-		db.select().from(callingDefinitions).orderBy(callingDefinitions.name)
+	const tab = tabSchema.parse(event.url.searchParams.get('tab') ?? undefined);
+	const q = querySchema.parse(event.url.searchParams.get('q') ?? undefined);
+	const status = statusSchema.parse(event.url.searchParams.get('status') ?? undefined);
+	const requestedPage = pageSchema.parse(event.url.searchParams.get('page') ?? undefined);
+
+	const countsPromise = Promise.all([
+		db.select({ count: count() }).from(monsters),
+		db.select({ count: count() }).from(traps),
+		db.select({ count: count() }).from(speciesDefinitions),
+		db.select({ count: count() }).from(callingDefinitions)
 	]);
-	return { monsters: monsterRows, traps: trapRows, species: speciesRows, callings: callingRows };
+
+	let records:
+		| (typeof monsters.$inferSelect)[]
+		| (typeof traps.$inferSelect)[]
+		| (typeof speciesDefinitions.$inferSelect)[]
+		| (typeof callingDefinitions.$inferSelect)[];
+	let filteredCount: number;
+
+	if (tab === 'monsters') {
+		const where = and(
+			status === 'all' ? undefined : eq(monsters.enabled, status === 'enabled'),
+			q
+				? or(
+						ilike(monsters.name, `%${q}%`),
+						ilike(monsters.description, `%${q}%`),
+						ilike(monsters.debauchedDescription, `%${q}%`),
+						ilike(monsters.temperament, `%${q}%`)
+					)
+				: undefined
+		);
+		const countRows = await db.select({ count: count() }).from(monsters).where(where);
+		filteredCount = countRows[0]?.count ?? 0;
+		const totalPages = Math.max(1, Math.ceil(filteredCount / pageSize));
+		const page = Math.min(requestedPage, totalPages);
+		records = await db
+			.select()
+			.from(monsters)
+			.where(where)
+			.orderBy(monsters.name, monsters.id)
+			.limit(pageSize)
+			.offset((page - 1) * pageSize);
+		const [monsterCount, trapCount, speciesCount, callingCount] = await countsPromise;
+		return {
+			tab,
+			counts: {
+				monsters: monsterCount[0]?.count ?? 0,
+				traps: trapCount[0]?.count ?? 0,
+				species: speciesCount[0]?.count ?? 0,
+				callings: callingCount[0]?.count ?? 0
+			},
+			q,
+			status,
+			page,
+			pageSize,
+			filteredCount,
+			totalPages,
+			records
+		};
+	}
+
+	if (tab === 'traps') {
+		const where = and(
+			status === 'all' ? undefined : eq(traps.enabled, status === 'enabled'),
+			q
+				? or(
+						ilike(traps.name, `%${q}%`),
+						ilike(traps.description, `%${q}%`),
+						ilike(traps.consequence, `%${q}%`)
+					)
+				: undefined
+		);
+		const countRows = await db.select({ count: count() }).from(traps).where(where);
+		filteredCount = countRows[0]?.count ?? 0;
+		const totalPages = Math.max(1, Math.ceil(filteredCount / pageSize));
+		const page = Math.min(requestedPage, totalPages);
+		records = await db
+			.select()
+			.from(traps)
+			.where(where)
+			.orderBy(traps.name, traps.id)
+			.limit(pageSize)
+			.offset((page - 1) * pageSize);
+		const [monsterCount, trapCount, speciesCount, callingCount] = await countsPromise;
+		return {
+			tab,
+			counts: {
+				monsters: monsterCount[0]?.count ?? 0,
+				traps: trapCount[0]?.count ?? 0,
+				species: speciesCount[0]?.count ?? 0,
+				callings: callingCount[0]?.count ?? 0
+			},
+			q,
+			status,
+			page,
+			pageSize,
+			filteredCount,
+			totalPages,
+			records
+		};
+	}
+
+	const table = tab === 'species' ? speciesDefinitions : callingDefinitions;
+	const where = and(
+		status === 'all' ? undefined : eq(table.enabled, status === 'enabled'),
+		q ? or(ilike(table.name, `%${q}%`), ilike(table.description, `%${q}%`)) : undefined
+	);
+	const countRows = await db.select({ count: count() }).from(table).where(where);
+	filteredCount = countRows[0]?.count ?? 0;
+	const totalPages = Math.max(1, Math.ceil(filteredCount / pageSize));
+	const page = Math.min(requestedPage, totalPages);
+	records = await db
+		.select()
+		.from(table)
+		.where(where)
+		.orderBy(table.name, table.id)
+		.limit(pageSize)
+		.offset((page - 1) * pageSize);
+	const [monsterCount, trapCount, speciesCount, callingCount] = await countsPromise;
+
+	return {
+		tab,
+		counts: {
+			monsters: monsterCount[0]?.count ?? 0,
+			traps: trapCount[0]?.count ?? 0,
+			species: speciesCount[0]?.count ?? 0,
+			callings: callingCount[0]?.count ?? 0
+		},
+		q,
+		status,
+		page,
+		pageSize,
+		filteredCount,
+		totalPages,
+		records
+	};
 };
 
 export const actions: Actions = {

@@ -28,7 +28,7 @@
 		<a class="btn btn-secondary" href="/characters">Return to active characters</a>
 	</section>
 {:else}
-	<form method="POST" action="?/default" class="grid-2">
+	<form method="POST" action="?/save" class="grid-2">
 		<section class="card">
 			<div class="portrait">
 				{#if data.character.imageUrl && !imageFailed}<img

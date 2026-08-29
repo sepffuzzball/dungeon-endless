@@ -52,7 +52,7 @@ export const load: PageServerLoad = async (event) => {
 };
 
 export const actions: Actions = {
-	default: async (event) => {
+	save: async (event) => {
 		assertSameOrigin(event);
 		const user = requireUser(event);
 		const id = uuidSchema.safeParse(event.params.characterId);

@@ -9,7 +9,11 @@ FROM node:22-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+# Compile-time placeholders only: scoped to this single RUN so the SvelteKit build
+# can validate the runtime environment config. Real values remain mandatory at runtime.
+RUN DATABASE_URL=postgres://dungeon:dungeon@127.0.0.1:5432/dungeon \
+	APP_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+	npm run build
 
 FROM node:22-alpine AS run
 ENV NODE_ENV=production

@@ -10,6 +10,15 @@ import {
 } from '$lib/types';
 import { config } from './config';
 import { decryptEndpointKey } from './crypto';
+import {
+	classifyLlmFailure,
+	contextFields,
+	LlmFailure,
+	logLlmFallback,
+	toLlmFailure,
+	type LlmDiagnosticContext,
+	type LlmStreamStats
+} from './llm-diagnostics';
 import { validateLlmUrl, validateResolvedLlmUrl } from './validation';
 import {
 	composeInterpretation,
@@ -30,6 +39,7 @@ import { mapActionIntent, normalizeActionIntent, type MappedIntent } from './gam
  */
 
 export interface EndpointSource {
+	id?: string;
 	name: string;
 	purpose: LlmPurpose;
 	baseUrl: string;
@@ -58,6 +68,8 @@ export interface LlmCallOptions {
 	maxTokens?: number;
 	timeoutMs?: number;
 	signal?: AbortSignal;
+	/** Receives cumulative stream metrics for fallback diagnostics; must never throw. */
+	onStats?: (stats: LlmStreamStats) => void;
 }
 
 /** Reads at most `limit` bytes from a web stream, reporting truncation. */
@@ -121,13 +133,22 @@ export async function callChat(
 	const signal = opts.signal
 		? AbortSignal.any([controller.signal, opts.signal])
 		: controller.signal;
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	const timer = setTimeout(
+		() => controller.abort(new LlmFailure('timeout', 'LLM request timed out')),
+		timeoutMs
+	);
 	let response: Response | undefined;
 	try {
 		const baseUrl = endpoint.baseUrl.replace(/\/+$/, '');
 		const candidateUrl = validateLlmUrl(`${baseUrl}/chat/completions`);
 		let apiKey: string | undefined;
-		if (endpoint.apiKeyEnc) apiKey = decryptEndpointKey(endpoint.apiKeyEnc);
+		if (endpoint.apiKeyEnc) {
+			try {
+				apiKey = decryptEndpointKey(endpoint.apiKeyEnc);
+			} catch {
+				throw new LlmFailure('key_decryption', 'Endpoint key could not be decrypted');
+			}
+		}
 
 		// Resolve and re-check immediately before fetch. Native fetch cannot pin that
 		// address, so deployment-level egress controls remain necessary.
@@ -150,25 +171,40 @@ export async function callChat(
 			signal
 		});
 
-		if (response.type === 'opaqueredirect') {
-			throw new Error('Endpoint returned a redirect; redirects are not followed');
+		if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+			throw new LlmFailure(
+				'redirect_rejected',
+				'Endpoint returned a redirect; redirects are not followed'
+			);
 		}
 		if (!response.ok) {
-			throw new Error(`Endpoint responded with status ${response.status}`);
+			throw new LlmFailure('http_status', `Endpoint responded with status ${response.status}`, {
+				status: response.status
+			});
+		}
+		if (!response.body) {
+			throw new LlmFailure('missing_body', 'Endpoint returned an empty response body');
 		}
 		const { text, truncated } = await readBounded(response.body, config.LLM_MAX_RESPONSE_BYTES);
-		if (truncated) throw new Error('Endpoint response exceeded the bounded read limit');
+		if (truncated)
+			throw new LlmFailure(
+				'response_too_large',
+				'Endpoint response exceeded the bounded read limit'
+			);
 
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(text);
 		} catch {
-			throw new Error('Endpoint response was not valid JSON');
+			throw new LlmFailure('invalid_structured_response', 'Endpoint response was not valid JSON');
 		}
 		const content = (parsed as { choices?: Array<{ message?: { content?: unknown } }> })
 			?.choices?.[0]?.message?.content;
 		if (typeof content !== 'string') {
-			throw new Error('Endpoint response was missing message content');
+			throw new LlmFailure(
+				'invalid_structured_response',
+				'Endpoint response was missing message content'
+			);
 		}
 		return content;
 	} catch (error) {
@@ -179,8 +215,9 @@ export async function callChat(
 				// The reader may already have canceled or consumed the body.
 			}
 		}
+		const failure = toLlmFailure(signal.aborted ? signal.reason : error, 'network_error');
 		controller.abort();
-		throw error;
+		throw failure;
 	} finally {
 		clearTimeout(timer);
 	}
@@ -213,7 +250,7 @@ export class OpenAiSseDecoder {
 	push(chunk: Uint8Array): SseEvent[] {
 		this.buffer += this.decoder.decode(chunk, { stream: true });
 		if (Buffer.byteLength(this.buffer, 'utf8') > SSE_MAX_DECODE_BYTES) {
-			throw new Error('SSE stream exceeded the bounded decode buffer');
+			throw new LlmFailure('decoder_limit', 'SSE stream exceeded the bounded decode buffer');
 		}
 		return this.drain();
 	}
@@ -280,19 +317,60 @@ export class OpenAiSseDecoder {
 	}
 }
 
-/** Parses one SSE event into the OpenAI chat delta content; `[DONE]` marks the end. */
-export function parseSseChunk(event: SseEvent): StreamChunk {
+/**
+ * Parses one SSE event into the OpenAI chat delta content; `[DONE]` marks the
+ * end. `malformed` is true when the event data could not be decoded as the
+ * expected delta shape (used only for diagnostics counting).
+ */
+function decodeSseChunk(event: SseEvent): { chunk: StreamChunk; malformed: boolean } {
 	const trimmed = event.data.trim();
-	if (trimmed === '[DONE]') return { content: '', done: true };
+	if (trimmed === '[DONE]') return { chunk: { content: '', done: true }, malformed: false };
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(trimmed);
 	} catch {
-		return { content: '', done: false };
+		return { chunk: { content: '', done: false }, malformed: true };
 	}
-	const content = (parsed as { choices?: Array<{ delta?: { content?: unknown } }> })?.choices?.[0]
-		?.delta?.content;
-	return { content: typeof content === 'string' ? content : '', done: false };
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		return { chunk: { content: '', done: false }, malformed: true };
+	}
+	const payload = parsed as Record<string, unknown>;
+	if (!Array.isArray(payload.choices)) {
+		return { chunk: { content: '', done: false }, malformed: true };
+	}
+	if (payload.choices.length === 0) {
+		const metadata =
+			typeof payload.id === 'string' ||
+			typeof payload.object === 'string' ||
+			typeof payload.created === 'number' ||
+			typeof payload.model === 'string' ||
+			(payload.usage !== null && typeof payload.usage === 'object');
+		return { chunk: { content: '', done: false }, malformed: !metadata };
+	}
+	const choice = payload.choices[0];
+	if (!choice || typeof choice !== 'object' || Array.isArray(choice)) {
+		return { chunk: { content: '', done: false }, malformed: true };
+	}
+	const record = choice as Record<string, unknown>;
+	const delta = record.delta;
+	if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
+		const deltaRecord = delta as Record<string, unknown>;
+		if (typeof deltaRecord.content === 'string') {
+			return { chunk: { content: deltaRecord.content, done: false }, malformed: false };
+		}
+		if (typeof deltaRecord.role === 'string') {
+			return { chunk: { content: '', done: false }, malformed: false };
+		}
+	}
+	if (typeof record.finish_reason === 'string') {
+		return { chunk: { content: '', done: false }, malformed: false };
+	}
+	return { chunk: { content: '', done: false }, malformed: true };
+}
+
+/** Parses one SSE event into the OpenAI chat delta content; `[DONE]` marks the end. */
+export function parseSseChunk(event: SseEvent): StreamChunk {
+	return decodeSseChunk(event).chunk;
 }
 
 /**
@@ -313,13 +391,22 @@ export async function* callChatStream(
 	const signal = opts.signal
 		? AbortSignal.any([controller.signal, opts.signal])
 		: controller.signal;
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	const timer = setTimeout(
+		() => controller.abort(new LlmFailure('timeout', 'LLM stream timed out')),
+		timeoutMs
+	);
 	let response: Response | undefined;
 	try {
 		const baseUrl = endpoint.baseUrl.replace(/\/+$/, '');
 		const candidateUrl = validateLlmUrl(`${baseUrl}/chat/completions`);
 		let apiKey: string | undefined;
-		if (endpoint.apiKeyEnc) apiKey = decryptEndpointKey(endpoint.apiKeyEnc);
+		if (endpoint.apiKeyEnc) {
+			try {
+				apiKey = decryptEndpointKey(endpoint.apiKeyEnc);
+			} catch {
+				throw new LlmFailure('key_decryption', 'Endpoint key could not be decrypted');
+			}
+		}
 
 		const url = await validateResolvedLlmUrl(candidateUrl.toString());
 		signal.throwIfAborted();
@@ -340,19 +427,35 @@ export async function* callChatStream(
 			signal
 		});
 
-		if (response.type === 'opaqueredirect') {
-			throw new Error('Endpoint returned a redirect; redirects are not followed');
+		if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+			throw new LlmFailure(
+				'redirect_rejected',
+				'Endpoint returned a redirect; redirects are not followed'
+			);
 		}
 		if (!response.ok) {
-			throw new Error(`Endpoint responded with status ${response.status}`);
+			throw new LlmFailure('http_status', `Endpoint responded with status ${response.status}`, {
+				status: response.status
+			});
 		}
 		if (!response.body) {
-			throw new Error('Endpoint returned an empty response body');
+			throw new LlmFailure('missing_body', 'Endpoint returned an empty response body');
 		}
 
 		const reader = response.body.getReader();
 		const decoder = new OpenAiSseDecoder();
 		let totalBytes = 0;
+		let sseEvents = 0;
+		let parseFailures = 0;
+		let contentDeltas = 0;
+		const reportStats = () => {
+			if (!opts.onStats) return;
+			try {
+				opts.onStats({ bytes: totalBytes, sseEvents, parseFailures, contentDeltas });
+			} catch {
+				// Statistics must never break the stream.
+			}
+		};
 		try {
 			for (;;) {
 				const { done, value } = await reader.read();
@@ -360,19 +463,32 @@ export async function* callChatStream(
 				if (value && value.length > 0) {
 					totalBytes += value.length;
 					if (totalBytes > config.LLM_MAX_RESPONSE_BYTES) {
-						throw new Error('Endpoint stream exceeded the bounded read limit');
+						throw new LlmFailure(
+							'response_too_large',
+							'Endpoint stream exceeded the bounded read limit'
+						);
 					}
 					for (const event of decoder.push(value)) {
-						const chunk = parseSseChunk(event);
+						sseEvents++;
+						const { chunk, malformed } = decodeSseChunk(event);
+						if (malformed) parseFailures++;
 						if (chunk.done) return;
-						if (chunk.content) yield chunk;
+						if (chunk.content) {
+							contentDeltas++;
+							yield chunk;
+						}
 					}
 				}
 			}
 			for (const event of decoder.flush()) {
-				const chunk = parseSseChunk(event);
+				sseEvents++;
+				const { chunk, malformed } = decodeSseChunk(event);
+				if (malformed) parseFailures++;
 				if (chunk.done) return;
-				if (chunk.content) yield chunk;
+				if (chunk.content) {
+					contentDeltas++;
+					yield chunk;
+				}
 			}
 		} finally {
 			try {
@@ -381,6 +497,7 @@ export async function* callChatStream(
 				// Reader already closed.
 			}
 			reader.releaseLock();
+			reportStats();
 		}
 	} catch (error) {
 		if (response?.body) {
@@ -390,35 +507,62 @@ export async function* callChatStream(
 				// Already canceled or consumed.
 			}
 		}
+		const failure = toLlmFailure(signal.aborted ? signal.reason : error, 'network_error');
 		controller.abort();
-		throw error;
+		throw failure;
 	} finally {
 		clearTimeout(timer);
 	}
 }
 
-/** Tries enabled endpoints for a purpose in name order, then the fallback. */
+/**
+ * Tries enabled endpoints for a purpose in name order, then the fallback.
+ * Emits exactly one fallback diagnostic after every candidate has failed or
+ * when no endpoint is enabled for the purpose (never once per retry).
+ */
 async function runPurpose(
 	purpose: LlmPurpose,
 	endpoints: readonly EndpointSource[],
 	messages: ChatMessage[],
 	fallback: string,
-	opts: LlmCallOptions = {}
+	opts: LlmCallOptions = {},
+	diagnostics?: LlmDiagnosticContext
 ): Promise<string> {
 	const candidates = [...endpoints]
 		.filter((e) => e.enabled && e.purpose === purpose)
 		.sort((a, b) => a.name.localeCompare(b.name));
 	let lastError: unknown;
+	let lastEndpoint: EndpointSource | undefined;
 	for (const endpoint of candidates) {
+		lastEndpoint = endpoint;
 		try {
 			return await callChat(endpoint, messages, opts);
 		} catch (err) {
 			lastError = err;
 		}
 	}
-	if (candidates.length > 0) {
-		// Record the failure reason but always keep the fallback available.
-		void lastError;
+	if (candidates.length === 0) {
+		logLlmFallback({
+			purpose,
+			mode: 'non_stream',
+			reason: 'no_enabled_endpoint',
+			configuredTimeoutMs: opts.timeoutMs ?? config.LLM_TIMEOUT_MS,
+			visibleChars: fallback.length,
+			...contextFields(diagnostics)
+		});
+	} else {
+		logLlmFallback({
+			purpose,
+			mode: 'non_stream',
+			reason: classifyLlmFailure(lastError),
+			endpointId: lastEndpoint?.id,
+			configuredTimeoutMs: opts.timeoutMs ?? lastEndpoint?.timeoutMs ?? config.LLM_TIMEOUT_MS,
+			...(lastError instanceof LlmFailure && lastError.status !== undefined
+				? { status: lastError.status }
+				: {}),
+			visibleChars: fallback.length,
+			...contextFields(diagnostics)
+		});
 	}
 	return fallback;
 }
@@ -712,6 +856,18 @@ export interface ProseInput {
 	rolls?: RollRecord[];
 	endpoints: readonly EndpointSource[];
 	signal?: AbortSignal;
+	/** Optional call-site context copied into fallback diagnostics. */
+	diagnostics?: LlmDiagnosticContext;
+	/** Notifies a route that this helper emitted and will return a deterministic fallback. */
+	onFallbackDiagnostic?: () => void;
+}
+
+function notifyFallbackDiagnostic(callback: (() => void) | undefined): void {
+	try {
+		callback?.();
+	} catch {
+		// Diagnostic coordination must never interrupt deterministic fallback behavior.
+	}
 }
 
 /** Fetches prose narration for a resolved turn, or deterministic prose. */
@@ -725,7 +881,9 @@ export async function narrateProse(input: ProseInput): Promise<string> {
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		fallbackProse(room, actionText, outcome, rolls)
+		fallbackProse(room, actionText, outcome, rolls),
+		{},
+		input.diagnostics
 	);
 }
 
@@ -738,13 +896,26 @@ export async function narrateProse(input: ProseInput): Promise<string> {
  */
 export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChunk> {
 	const { system, room, actionText, outcome, rolls } = input;
+	const diagnostics = input.diagnostics;
 	const endpoint = pickEndpoint(input.endpoints, 'prose');
 	if (!endpoint) {
-		yield* fallbackProseStream(room, actionText, outcome, rolls);
+		const fallback = fallbackProse(room, actionText, outcome, rolls);
+		logLlmFallback({
+			purpose: 'prose',
+			mode: 'stream',
+			reason: 'no_enabled_endpoint',
+			configuredTimeoutMs: config.LLM_TIMEOUT_MS,
+			visibleChars: fallback.length,
+			...contextFields(diagnostics)
+		});
+		notifyFallbackDiagnostic(input.onFallbackDiagnostic);
+		yield* chunkFallback(fallback);
 		return;
 	}
 	const prompt = composeProse({ system, room, actionText, outcome, rolls });
-	let emitted = false;
+	const configuredTimeoutMs = endpoint.timeoutMs ?? config.LLM_TIMEOUT_MS;
+	let visibleChars = 0;
+	let stats: LlmStreamStats = { bytes: 0, sseEvents: 0, parseFailures: 0, contentDeltas: 0 };
 	try {
 		for await (const chunk of callChatStream(
 			endpoint,
@@ -752,20 +923,62 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 				{ role: 'system', content: prompt.system },
 				{ role: 'user', content: prompt.user }
 			],
-			{ signal: input.signal }
+			{
+				signal: input.signal,
+				onStats: (s) => {
+					stats = s;
+				}
+			}
 		)) {
 			if (chunk.done) return;
 			if (chunk.content) {
-				emitted = true;
+				visibleChars += chunk.content.length;
 				yield chunk;
 			}
 		}
 	} catch (error) {
-		if (emitted) throw error;
-		yield* fallbackProseStream(room, actionText, outcome, rolls);
+		const failure = toLlmFailure(error);
+		if (failure.reason === 'client_disconnect' || failure.reason === 'lease_lost') throw failure;
+		const fallback = fallbackProse(room, actionText, outcome, rolls);
+		logLlmFallback({
+			purpose: 'prose',
+			mode: 'stream',
+			reason: failure.reason,
+			endpointId: endpoint.id,
+			configuredTimeoutMs,
+			...(failure.status !== undefined ? { status: failure.status } : {}),
+			bytes: stats.bytes,
+			sseEvents: stats.sseEvents,
+			parseFailures: stats.parseFailures,
+			contentDeltas: stats.contentDeltas,
+			visibleChars: visibleChars > 0 ? visibleChars : fallback.length,
+			...contextFields(diagnostics)
+		});
+		failure.diagnosticLogged = true;
+		if (visibleChars > 0) throw failure;
+		notifyFallbackDiagnostic(input.onFallbackDiagnostic);
+		yield* chunkFallback(fallback);
 		return;
 	}
-	if (!emitted) yield* fallbackProseStream(room, actionText, outcome, rolls);
+	if (visibleChars === 0) {
+		const fallback = fallbackProse(room, actionText, outcome, rolls);
+		logLlmFallback({
+			purpose: 'prose',
+			mode: 'stream',
+			reason: stats.parseFailures > 0 ? 'stream_parse_error' : 'no_content_delta',
+			endpointId: endpoint.id,
+			configuredTimeoutMs,
+			bytes: stats.bytes,
+			sseEvents: stats.sseEvents,
+			parseFailures: stats.parseFailures,
+			contentDeltas: stats.contentDeltas,
+			visibleChars: fallback.length,
+			...contextFields(diagnostics)
+		});
+		notifyFallbackDiagnostic(input.onFallbackDiagnostic);
+		yield* chunkFallback(fallback);
+		return;
+	}
 }
 
 export interface RoomEntryStreamInput {
@@ -776,6 +989,10 @@ export interface RoomEntryStreamInput {
 	inventory: InventoryItem[];
 	endpoints: readonly EndpointSource[];
 	signal?: AbortSignal;
+	/** Optional call-site context copied into fallback diagnostics. */
+	diagnostics?: LlmDiagnosticContext;
+	/** Notifies a route that this helper emitted and will return a deterministic fallback. */
+	onFallbackDiagnostic?: () => void;
 }
 
 /**
@@ -784,9 +1001,20 @@ export interface RoomEntryStreamInput {
  */
 export async function* streamRoomEntry(input: RoomEntryStreamInput): AsyncGenerator<StreamChunk> {
 	const { system, room, runSummary, character, inventory } = input;
+	const diagnostics = input.diagnostics;
 	const endpoint = pickEndpoint(input.endpoints, 'prose');
 	if (!endpoint) {
-		yield* fallbackRoomEntryStream(room, runSummary);
+		const fallback = fallbackRoomEntry(room, runSummary);
+		logLlmFallback({
+			purpose: 'room_prose',
+			mode: 'stream',
+			reason: 'no_enabled_endpoint',
+			configuredTimeoutMs: config.LLM_TIMEOUT_MS,
+			visibleChars: fallback.length,
+			...contextFields(diagnostics)
+		});
+		notifyFallbackDiagnostic(input.onFallbackDiagnostic);
+		yield* chunkFallback(fallback);
 		return;
 	}
 	const prompt = composeRoomEntry({
@@ -796,7 +1024,9 @@ export async function* streamRoomEntry(input: RoomEntryStreamInput): AsyncGenera
 		character,
 		inventory
 	});
-	let emitted = false;
+	const configuredTimeoutMs = endpoint.timeoutMs ?? config.LLM_TIMEOUT_MS;
+	let visibleChars = 0;
+	let stats: LlmStreamStats = { bytes: 0, sseEvents: 0, parseFailures: 0, contentDeltas: 0 };
 	try {
 		for await (const chunk of callChatStream(
 			endpoint,
@@ -804,20 +1034,62 @@ export async function* streamRoomEntry(input: RoomEntryStreamInput): AsyncGenera
 				{ role: 'system', content: prompt.system },
 				{ role: 'user', content: prompt.user }
 			],
-			{ signal: input.signal }
+			{
+				signal: input.signal,
+				onStats: (s) => {
+					stats = s;
+				}
+			}
 		)) {
 			if (chunk.done) return;
 			if (chunk.content) {
-				emitted = true;
+				visibleChars += chunk.content.length;
 				yield chunk;
 			}
 		}
 	} catch (error) {
-		if (emitted) throw error;
-		yield* fallbackRoomEntryStream(room, runSummary);
+		const failure = toLlmFailure(error);
+		if (failure.reason === 'client_disconnect' || failure.reason === 'lease_lost') throw failure;
+		const fallback = fallbackRoomEntry(room, runSummary);
+		logLlmFallback({
+			purpose: 'room_prose',
+			mode: 'stream',
+			reason: failure.reason,
+			endpointId: endpoint.id,
+			configuredTimeoutMs,
+			...(failure.status !== undefined ? { status: failure.status } : {}),
+			bytes: stats.bytes,
+			sseEvents: stats.sseEvents,
+			parseFailures: stats.parseFailures,
+			contentDeltas: stats.contentDeltas,
+			visibleChars: visibleChars > 0 ? visibleChars : fallback.length,
+			...contextFields(diagnostics)
+		});
+		failure.diagnosticLogged = true;
+		if (visibleChars > 0) throw failure;
+		notifyFallbackDiagnostic(input.onFallbackDiagnostic);
+		yield* chunkFallback(fallback);
 		return;
 	}
-	if (!emitted) yield* fallbackRoomEntryStream(room, runSummary);
+	if (visibleChars === 0) {
+		const fallback = fallbackRoomEntry(room, runSummary);
+		logLlmFallback({
+			purpose: 'room_prose',
+			mode: 'stream',
+			reason: stats.parseFailures > 0 ? 'stream_parse_error' : 'no_content_delta',
+			endpointId: endpoint.id,
+			configuredTimeoutMs,
+			bytes: stats.bytes,
+			sseEvents: stats.sseEvents,
+			parseFailures: stats.parseFailures,
+			contentDeltas: stats.contentDeltas,
+			visibleChars: fallback.length,
+			...contextFields(diagnostics)
+		});
+		notifyFallbackDiagnostic(input.onFallbackDiagnostic);
+		yield* chunkFallback(fallback);
+		return;
+	}
 }
 
 export interface InterpretationInput {
@@ -825,6 +1097,8 @@ export interface InterpretationInput {
 	room: RoomSnapshot;
 	actionText: string;
 	endpoints: readonly EndpointSource[];
+	/** Optional call-site context copied into fallback diagnostics. */
+	diagnostics?: LlmDiagnosticContext;
 }
 
 /** Parses the player action into the bounded intent; falls back to the heuristic mapper. */
@@ -839,11 +1113,20 @@ export async function interpretAction(input: InterpretationInput): Promise<Mappe
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		JSON.stringify(fallback)
+		JSON.stringify(fallback),
+		{},
+		input.diagnostics
 	);
 	try {
 		return normalizeActionIntent(room, parseInterpretation(content));
 	} catch {
+		logLlmFallback({
+			purpose: 'interpretation',
+			mode: 'non_stream',
+			reason: 'invalid_structured_response',
+			visibleChars: content.length,
+			...contextFields(input.diagnostics)
+		});
 		return fallback;
 	}
 }
@@ -854,6 +1137,8 @@ export interface SummaryInput {
 	actionText: string;
 	outcome: TurnOutcome;
 	endpoints: readonly EndpointSource[];
+	/** Optional call-site context copied into fallback diagnostics. */
+	diagnostics?: LlmDiagnosticContext;
 }
 
 /** Fetches a short turn summary, or deterministic summary. */
@@ -867,7 +1152,9 @@ export async function summarizeTurn(input: SummaryInput): Promise<string> {
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		fallbackSummary(room, actionText, outcome)
+		fallbackSummary(room, actionText, outcome),
+		{},
+		input.diagnostics
 	);
 }
 
@@ -875,6 +1162,8 @@ export interface SuggestionsInput {
 	system: string;
 	room: RoomSnapshot;
 	endpoints: readonly EndpointSource[];
+	/** Optional call-site context copied into fallback diagnostics. */
+	diagnostics?: LlmDiagnosticContext;
 }
 
 /** Fetches up to three suggested actions, or deterministic suggestions. */
@@ -889,11 +1178,20 @@ export async function suggestActions(input: SuggestionsInput): Promise<Suggested
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		JSON.stringify(fallback)
+		JSON.stringify(fallback),
+		{},
+		input.diagnostics
 	);
 	try {
 		return parseSuggestions(content);
 	} catch {
+		logLlmFallback({
+			purpose: 'suggestions',
+			mode: 'non_stream',
+			reason: 'invalid_structured_response',
+			visibleChars: content.length,
+			...contextFields(input.diagnostics)
+		});
 		return fallback;
 	}
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { z } from 'zod';
@@ -14,6 +15,14 @@ import {
 	summarizeTurn
 } from '$lib/server/llm';
 import {
+	classifyLlmFailure,
+	LlmFailure,
+	logLlmFallback,
+	logLlmRouteError,
+	type LlmDiagnosticContext,
+	type LlmRouteErrorInput
+} from '$lib/server/llm-diagnostics';
+import {
 	formatSseComment,
 	formatSseEvent,
 	isNarrationLeaseStale,
@@ -28,6 +37,45 @@ const LEASE_MS = 30_000;
 const HEARTBEAT_MS = 8_000;
 const FOLLOWER_POLL_MS = 500;
 const OVERALL_WAIT_MS = 120_000;
+
+export function _outerRouteDiagnostic(
+	kind: 'turn' | 'room',
+	diagnostics: LlmDiagnosticContext,
+	failure: unknown
+): LlmRouteErrorInput | null {
+	const reason = classifyLlmFailure(failure, 'database_or_route_error');
+	if (reason === 'client_disconnect' || reason === 'lease_lost') return null;
+	return {
+		purpose: kind === 'turn' ? 'prose' : 'room_prose',
+		reason,
+		...diagnostics
+	};
+}
+
+/**
+ * Logs one sanitized route error for an unexpected ownership or target lookup
+ * database failure that happens before the guarded producer starts, then
+ * rethrows the original failure so the request keeps its normal error path.
+ * Only safe correlation, run, target and kind context is emitted; the raw
+ * failure is never serialized. Expected 400/401/403 and 404 outcomes are not
+ * routed through here.
+ */
+export function _preStreamDatabaseRouteError(
+	diagnostics: LlmDiagnosticContext,
+	failure: unknown
+): never {
+	const diagnostic: LlmRouteErrorInput = {
+		purpose: diagnostics.narrationKind === 'room' ? 'room_prose' : 'prose',
+		reason: 'database_or_route_error',
+		...diagnostics
+	};
+	try {
+		logLlmRouteError(diagnostic);
+	} catch {
+		// Diagnostics must never prevent request handling.
+	}
+	throw failure;
+}
 
 function prompt(run: typeof runs.$inferSelect, character: typeof characters.$inferSelect) {
 	return buildSystemPrompt({
@@ -122,41 +170,61 @@ export const GET: RequestHandler = async (event) => {
 		throw error(400, 'Invalid narration stream request.');
 	}
 	const targetId = id.data;
+	const diagnostics: LlmDiagnosticContext = {
+		correlationId: randomUUID(),
+		runId: runId.data,
+		targetId,
+		narrationKind: kind
+	};
 
-	const [owned] = await db
-		.select({ run: runs, character: characters })
-		.from(runs)
-		.innerJoin(characters, and(eq(runs.characterId, characters.id), eq(characters.userId, user.id)))
-		.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
-		.limit(1);
+	let owned;
+	try {
+		[owned] = await db
+			.select({ run: runs, character: characters })
+			.from(runs)
+			.innerJoin(
+				characters,
+				and(eq(runs.characterId, characters.id), eq(characters.userId, user.id))
+			)
+			.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
+			.limit(1);
+	} catch (caught) {
+		_preStreamDatabaseRouteError(diagnostics, caught);
+	}
 	if (!owned) throw error(404, 'Run not found.');
 
-	const initial =
-		kind === 'turn'
-			? (
-					await db
-						.select({ id: turns.id })
-						.from(turns)
-						.where(and(eq(turns.id, targetId), eq(turns.runId, owned.run.id)))
-						.limit(1)
-				)[0]
-			: (
-					await db
-						.select({ id: roomEntries.id })
-						.from(roomEntries)
-						.where(and(eq(roomEntries.id, targetId), eq(roomEntries.runId, owned.run.id)))
-						.limit(1)
-				)[0];
+	let initial;
+	try {
+		initial =
+			kind === 'turn'
+				? (
+						await db
+							.select({ id: turns.id })
+							.from(turns)
+							.where(and(eq(turns.id, targetId), eq(turns.runId, owned.run.id)))
+							.limit(1)
+					)[0]
+				: (
+						await db
+							.select({ id: roomEntries.id })
+							.from(roomEntries)
+							.where(and(eq(roomEntries.id, targetId), eq(roomEntries.runId, owned.run.id)))
+							.limit(1)
+					)[0];
+	} catch (caught) {
+		_preStreamDatabaseRouteError(diagnostics, caught);
+	}
 	if (!initial) throw error(404, 'Narration not found.');
 
 	const aborter = new AbortController();
-	const signal = AbortSignal.any([event.request.signal, aborter.signal]);
+	const signal = aborter.signal;
 	const encoder = new TextEncoder();
 	let closed = false;
 	let clientDisconnected = false;
 	let activeLease: Date | null = null;
 	let leaseLost = false;
 	let producerFinished = false;
+	let routeDiagnosticLogged = false;
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 	let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	let overallTimer: ReturnType<typeof setTimeout> | undefined;
@@ -181,15 +249,13 @@ export const GET: RequestHandler = async (event) => {
 				.where(and(eq(roomEntries.id, targetId), eq(roomEntries.startedAt, lease)));
 		}
 	}
-	event.request.signal.addEventListener(
-		'abort',
-		() => {
-			clientDisconnected = true;
-			aborter.abort();
-			void releaseLease();
-		},
-		{ once: true }
-	);
+	const disconnect = () => {
+		clientDisconnected = true;
+		aborter.abort(new LlmFailure('client_disconnect', 'Narration client disconnected'));
+		void releaseLease();
+	};
+	if (event.request.signal.aborted) disconnect();
+	else event.request.signal.addEventListener('abort', disconnect, { once: true });
 
 	const body = new ReadableStream<Uint8Array>({
 		start(controller) {
@@ -202,10 +268,17 @@ export const GET: RequestHandler = async (event) => {
 				if (keepaliveTimer) clearInterval(keepaliveTimer);
 				if (heartbeatTimer) clearInterval(heartbeatTimer);
 				if (overallTimer) clearTimeout(overallTimer);
-				controller.close();
+				try {
+					controller.close();
+				} catch {
+					// The consumer may already have canceled the stream.
+				}
 			};
 			keepaliveTimer = setInterval(() => send(formatSseComment()), HEARTBEAT_MS);
-			overallTimer = setTimeout(() => aborter.abort(), OVERALL_WAIT_MS);
+			overallTimer = setTimeout(
+				() => aborter.abort(new LlmFailure('timeout', 'Narration route timed out')),
+				OVERALL_WAIT_MS
+			);
 
 			void (async () => {
 				const deadline = Date.now() + OVERALL_WAIT_MS;
@@ -350,10 +423,12 @@ export const GET: RequestHandler = async (event) => {
 										.returning({ id: roomEntries.id });
 						if (saved.length === 0) {
 							leaseLost = true;
-							aborter.abort();
+							aborter.abort(new LlmFailure('lease_lost', 'Narration lease was lost'));
 						}
 					})()
-						.catch(() => aborter.abort())
+						.catch(() =>
+							aborter.abort(new LlmFailure('database_or_route_error', 'Narration heartbeat failed'))
+						)
 						.finally(() => {
 							heartbeatBusy = false;
 						});
@@ -382,7 +457,11 @@ export const GET: RequestHandler = async (event) => {
 							outcome: turn.outcome,
 							rolls: Array.isArray(turn.rolls) ? turn.rolls : [],
 							endpoints,
-							signal
+							signal,
+							diagnostics,
+							onFallbackDiagnostic: () => {
+								routeDiagnosticLogged = true;
+							}
 						})) {
 							accumulated += chunk.content;
 							const saved = await db
@@ -392,7 +471,7 @@ export const GET: RequestHandler = async (event) => {
 								.returning({ id: turns.id });
 							if (!saved.length) {
 								leaseLost = true;
-								aborter.abort();
+								aborter.abort(new LlmFailure('lease_lost', 'Narration lease was lost'));
 								return;
 							}
 							send(formatSseEvent('chunk', { text: chunk.content }));
@@ -404,7 +483,8 @@ export const GET: RequestHandler = async (event) => {
 								room: turn.roomSnapshot,
 								actionText: turn.actionText,
 								outcome: turn.outcome,
-								endpoints
+								endpoints,
+								diagnostics
 							});
 						} catch {
 							// The deterministic summary remains authoritative when every endpoint fails.
@@ -420,7 +500,7 @@ export const GET: RequestHandler = async (event) => {
 						});
 						if (!won) {
 							leaseLost = true;
-							aborter.abort();
+							aborter.abort(new LlmFailure('lease_lost', 'Narration lease was lost'));
 							return;
 						}
 						producerFinished = true;
@@ -452,6 +532,14 @@ export const GET: RequestHandler = async (event) => {
 								.where(and(eq(roomEntries.id, entry.id), eq(roomEntries.startedAt, activeLease)))
 								.returning({ id: roomEntries.id });
 							if (!saved.length) return;
+							routeDiagnosticLogged = true;
+							logLlmFallback({
+								purpose: 'room_prose',
+								mode: 'route',
+								reason: 'room_state_mismatch',
+								visibleChars: accumulated.length,
+								...diagnostics
+							});
 							producerFinished = true;
 							send(formatSseEvent('snapshot', { text: accumulated }));
 							send(formatSseEvent('done', { status: 'failed' }));
@@ -485,7 +573,11 @@ export const GET: RequestHandler = async (event) => {
 							},
 							inventory: run.inventory,
 							endpoints,
-							signal
+							signal,
+							diagnostics,
+							onFallbackDiagnostic: () => {
+								routeDiagnosticLogged = true;
+							}
 						})) {
 							accumulated += chunk.content;
 							const saved = await db
@@ -495,7 +587,7 @@ export const GET: RequestHandler = async (event) => {
 								.returning({ id: roomEntries.id });
 							if (!saved.length) {
 								leaseLost = true;
-								aborter.abort();
+								aborter.abort(new LlmFailure('lease_lost', 'Narration lease was lost'));
 								return;
 							}
 							send(formatSseEvent('chunk', { text: chunk.content }));
@@ -507,18 +599,23 @@ export const GET: RequestHandler = async (event) => {
 							.returning({ id: roomEntries.id });
 						if (!completed.length) {
 							leaseLost = true;
-							aborter.abort();
+							aborter.abort(new LlmFailure('lease_lost', 'Narration lease was lost'));
 							return;
 						}
 						producerFinished = true;
 					}
 					send(formatSseEvent('done', { status: 'complete' }));
-				} catch {
+				} catch (caught) {
 					if (leaseLost) return;
 					if (clientDisconnected || event.request.signal.aborted) {
 						await releaseLease();
 						return;
 					}
+					const failure = signal.aborted ? signal.reason : caught;
+					const alreadyDiagnosed =
+						routeDiagnosticLogged || (failure instanceof LlmFailure && failure.diagnosticLogged);
+					if (alreadyDiagnosed) routeDiagnosticLogged = true;
+					const routeReason = classifyLlmFailure(failure, 'database_or_route_error');
 					let saved: { id: string }[];
 					if (kind === 'turn') {
 						const [turn] = await db
@@ -529,14 +626,16 @@ export const GET: RequestHandler = async (event) => {
 						const summary = turn
 							? fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome)
 							: 'The dungeon falls silent.';
-						accumulated ||= turn
-							? fallbackProse(
-									turn.roomSnapshot,
-									turn.actionText,
-									turn.outcome,
-									Array.isArray(turn.rolls) ? turn.rolls : []
-								)
-							: 'The dungeon falls silent.';
+						if (!accumulated) {
+							accumulated = turn
+								? fallbackProse(
+										turn.roomSnapshot,
+										turn.actionText,
+										turn.outcome,
+										Array.isArray(turn.rolls) ? turn.rolls : []
+									)
+								: 'The dungeon falls silent.';
+						}
 						const won = await finalizeTurnNarration({
 							runId: owned.run.id,
 							userId: user.id,
@@ -554,9 +653,11 @@ export const GET: RequestHandler = async (event) => {
 							.from(roomEntries)
 							.where(and(eq(roomEntries.id, targetId), eq(roomEntries.runId, owned.run.id)))
 							.limit(1);
-						accumulated ||= entry
-							? fallbackRoomEntry(entry.roomSnapshot, owned.run.summary)
-							: 'The chamber waits in silence.';
+						if (!accumulated) {
+							accumulated = entry
+								? fallbackRoomEntry(entry.roomSnapshot, owned.run.summary)
+								: 'The chamber waits in silence.';
+						}
 						saved = await db
 							.update(roomEntries)
 							.set({ prose: accumulated, status: 'failed', updatedAt: new Date() })
@@ -564,6 +665,16 @@ export const GET: RequestHandler = async (event) => {
 							.returning({ id: roomEntries.id });
 					}
 					if (!saved.length) return;
+					if (!alreadyDiagnosed) {
+						routeDiagnosticLogged = true;
+						logLlmFallback({
+							purpose: kind === 'turn' ? 'prose' : 'room_prose',
+							mode: 'route',
+							reason: routeReason,
+							visibleChars: accumulated.length,
+							...diagnostics
+						});
+					}
 					producerFinished = true;
 					send(formatSseEvent('snapshot', { text: accumulated }));
 					send(
@@ -574,7 +685,18 @@ export const GET: RequestHandler = async (event) => {
 					if (heartbeatTimer) clearInterval(heartbeatTimer);
 					finish();
 				}
-			})().catch(() => finish());
+			})().catch((caught) => {
+				const diagnostic = _outerRouteDiagnostic(kind, diagnostics, caught);
+				if (diagnostic) {
+					routeDiagnosticLogged = true;
+					try {
+						logLlmRouteError(diagnostic);
+					} catch {
+						// Diagnostics must never prevent stream cleanup.
+					}
+				}
+				finish();
+			});
 		},
 		cancel() {
 			clientDisconnected = true;
@@ -582,7 +704,7 @@ export const GET: RequestHandler = async (event) => {
 			if (keepaliveTimer) clearInterval(keepaliveTimer);
 			if (heartbeatTimer) clearInterval(heartbeatTimer);
 			if (overallTimer) clearTimeout(overallTimer);
-			aborter.abort();
+			aborter.abort(new LlmFailure('client_disconnect', 'Narration client disconnected'));
 			void releaseLease();
 		}
 	});

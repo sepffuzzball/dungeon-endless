@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.hoisted(() => {
 	process.env.DATABASE_URL = 'postgres://test:test@localhost/test';
@@ -13,21 +13,27 @@ vi.mock('../src/lib/server/validation', () => ({
 	validateResolvedLlmUrl: async (raw: string) => new URL(raw)
 }));
 
+import { config } from '../src/lib/server/config';
+import { LlmFailure, LLM_FALLBACK_LOG_PREFIX } from '../src/lib/server/llm-diagnostics';
 import {
 	OpenAiSseDecoder,
 	callChatStream,
 	fallbackProse,
 	fallbackRoomEntry,
 	fallbackSummary,
+	interpretAction,
+	narrateProse,
 	parseSseChunk,
 	streamProse,
 	streamRoomEntry,
+	suggestActions,
 	type EndpointSource,
 	type StreamChunk
 } from '../src/lib/server/llm';
 
 const encoder = new TextEncoder();
 const endpoint = (name = 'primary'): EndpointSource => ({
+	id: '33333333-3333-4333-8333-333333333333',
 	name,
 	purpose: 'prose',
 	baseUrl: 'https://models.example/v1',
@@ -292,6 +298,7 @@ describe('streaming helpers', () => {
 
 	it('streams deterministic room-entry fallback chunks when no prose endpoint exists', async () => {
 		const chunks: string[] = [];
+		const onFallbackDiagnostic = vi.fn();
 		for await (const chunk of streamRoomEntry({
 			system: 'system',
 			room: { type: 'rest', name: 'Long Hall', description: 'x'.repeat(120) },
@@ -307,12 +314,14 @@ describe('streaming helpers', () => {
 				stats: { body: 1, mind: 0, spirit: 0 }
 			},
 			inventory: [],
-			endpoints: []
+			endpoints: [],
+			onFallbackDiagnostic
 		})) {
 			chunks.push(chunk.content);
 		}
 		expect(chunks.length).toBeGreaterThan(1);
 		expect(chunks.join('')).toContain('Long Hall');
+		expect(onFallbackDiagnostic).toHaveBeenCalledTimes(1);
 	});
 
 	it('propagates an upstream error after text instead of appending fallback prose', async () => {
@@ -342,7 +351,7 @@ describe('streaming helpers', () => {
 					seen.push(chunk.content);
 				}
 			})()
-		).rejects.toThrow('stream failed');
+		).rejects.toBeInstanceOf(LlmFailure);
 		expect(seen.join('')).toBe('upstream');
 	});
 
@@ -352,5 +361,375 @@ describe('streaming helpers', () => {
 			vi.fn(async () => responseFrom(['x'.repeat(513)]))
 		);
 		await expect(collect(callChatStream(endpoint(), []))).rejects.toThrow('bounded read limit');
+	});
+});
+
+describe('fallback diagnostics', () => {
+	let warn: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		config.LLM_DIAGNOSTICS = true;
+		warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		config.LLM_DIAGNOSTICS = true;
+		warn.mockRestore();
+	});
+
+	function parseLog(line: unknown): Record<string, unknown> {
+		return JSON.parse((line as string).slice(LLM_FALLBACK_LOG_PREFIX.length + 1)) as Record<
+			string,
+			unknown
+		>;
+	}
+
+	it('logs no_enabled_endpoint when no prose endpoint exists', async () => {
+		const onFallbackDiagnostic = vi.fn();
+		await collect(streamProse({ ...proseInput, endpoints: [], onFallbackDiagnostic }));
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(onFallbackDiagnostic).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('no_enabled_endpoint');
+		expect(payload.mode).toBe('stream');
+		expect(payload.purpose).toBe('prose');
+	});
+
+	it('logs no_content_delta when the stream closes without text', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => responseFrom([': keepalive\n\ndata: [DONE]\n\n']))
+		);
+		const onFallbackDiagnostic = vi.fn();
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()], onFallbackDiagnostic }));
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(onFallbackDiagnostic).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('no_content_delta');
+		expect(payload).not.toHaveProperty('name');
+		expect(payload.sseEvents).toBe(1);
+		expect(payload.parseFailures).toBe(0);
+	});
+
+	it('logs stream_parse_error when malformed events produced no content', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => responseFrom(['data: {bad json}\n\n', 'data: [DONE]\n\n']))
+		);
+		const onFallbackDiagnostic = vi.fn();
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()], onFallbackDiagnostic }));
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(onFallbackDiagnostic).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('stream_parse_error');
+		expect(payload.parseFailures).toBe(1);
+	});
+
+	it.each([
+		'{"error":{"message":"secret upstream error"}}',
+		'{"object":"chat.completion.chunk"}',
+		'{"choices":{}}',
+		'{"choices":[{}]}',
+		'{"choices":[{"delta":{"content":7}}]}'
+	])('counts an unaccepted OpenAI event shape as malformed: %s', async (data) => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => responseFrom([`data: ${data}\n\ndata: [DONE]\n\n`]))
+		);
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()] }));
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(payload.reason).toBe('stream_parse_error');
+		expect(payload.parseFailures).toBe(1);
+		expect(String(warn.mock.calls[0][0])).not.toContain('secret upstream error');
+	});
+
+	it('accepts role, finish, and bounded metadata events without parse failures', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom([
+					'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+					'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+					'data: {"object":"chat.completion.chunk","choices":[]}\n\n',
+					'data: [DONE]\n\n'
+				])
+			)
+		);
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()] }));
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('no_content_delta');
+		expect(payload.parseFailures).toBe(0);
+	});
+
+	it('logs one final classified diagnostic when a stream fails after content', async () => {
+		let pull = 0;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(
+				async () =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							pull(controller) {
+								if (pull++ === 0)
+									controller.enqueue(
+										encoder.encode('data: {"choices":[{"delta":{"content":"kept"}}]}\n\n')
+									);
+								else controller.error(new Error('raw secret stream failure'));
+							}
+						}),
+						{ status: 200 }
+					)
+			)
+		);
+		const seen: string[] = [];
+		let failure: unknown;
+		try {
+			for await (const chunk of streamProse({ ...proseInput, endpoints: [endpoint()] }))
+				seen.push(chunk.content);
+		} catch (error) {
+			failure = error;
+		}
+		expect(seen.join('')).toBe('kept');
+		expect(failure).toMatchObject({ reason: 'network_error', diagnosticLogged: true });
+		expect(warn).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.contentDeltas).toBe(1);
+		expect(payload.visibleChars).toBe(4);
+		expect(String(warn.mock.calls[0][0])).not.toContain('raw secret stream failure');
+	});
+
+	it('logs the exact cumulative visible room-entry characters on a midstream failure', async () => {
+		let pull = 0;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(
+				async () =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							pull(controller) {
+								if (pull++ === 0) {
+									controller.enqueue(
+										encoder.encode('data: {"choices":[{"delta":{"content":"seven!!"}}]}\n\n')
+									);
+								} else controller.error(new Error('secret room stream failure'));
+							}
+						}),
+						{ status: 200 }
+					)
+			)
+		);
+		await expect(
+			collect(
+				streamRoomEntry({
+					system: 'system',
+					room: { type: 'rest', name: 'Long Hall' },
+					runSummary: '',
+					character: {
+						name: 'Mara',
+						companyName: 'Company',
+						description: '',
+						height: 'Tall',
+						build: 'Lean',
+						species: 'Human',
+						calling: 'Warden',
+						stats: { body: 1, mind: 0, spirit: 0 }
+					},
+					inventory: [],
+					endpoints: [endpoint()]
+				})
+			)
+		).rejects.toMatchObject({ diagnosticLogged: true });
+		expect(warn).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.purpose).toBe('room_prose');
+		expect(payload.visibleChars).toBe(7);
+		expect(String(warn.mock.calls[0][0])).not.toContain('secret room stream failure');
+	});
+
+	it('logs response_too_large both before and after visible stream content', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => responseFrom(['x'.repeat(513)]))
+		);
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()] }));
+		expect(parseLog(warn.mock.calls[0][0]).reason).toBe('response_too_large');
+		warn.mockClear();
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom(['data: {"choices":[{"delta":{"content":"kept"}}]}\n\n', 'x'.repeat(500)])
+			)
+		);
+		await expect(
+			collect(streamProse({ ...proseInput, endpoints: [endpoint()] }))
+		).rejects.toMatchObject({ reason: 'response_too_large', diagnosticLogged: true });
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(parseLog(warn.mock.calls[0][0]).reason).toBe('response_too_large');
+	});
+
+	it('logs timeout once before content and uses the deterministic fallback', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(
+				async (_url: URL | RequestInfo, init?: RequestInit) =>
+					await new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+							once: true
+						});
+					})
+			)
+		);
+		const text = await collect(
+			streamProse({ ...proseInput, endpoints: [{ ...endpoint(), timeoutMs: 5 }] })
+		);
+		expect(text).toContain('Watcher');
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(parseLog(warn.mock.calls[0][0]).reason).toBe('timeout');
+	});
+
+	it('logs timeout once after content and rethrows without appending fallback', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => {
+				let sent = false;
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), {
+								once: true
+							});
+						},
+						pull(controller) {
+							if (!sent) {
+								sent = true;
+								controller.enqueue(
+									encoder.encode('data: {"choices":[{"delta":{"content":"kept"}}]}\n\n')
+								);
+							}
+						}
+					}),
+					{ status: 200 }
+				);
+			})
+		);
+		const seen: string[] = [];
+		await expect(
+			(async () => {
+				for await (const chunk of streamProse({
+					...proseInput,
+					endpoints: [{ ...endpoint(), timeoutMs: 5 }]
+				}))
+					seen.push(chunk.content);
+			})()
+		).rejects.toMatchObject({ reason: 'timeout', diagnosticLogged: true });
+		expect(seen.join('')).toBe('kept');
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(parseLog(warn.mock.calls[0][0]).reason).toBe('timeout');
+	});
+
+	it('classifies manual redirects before generic HTTP errors', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response(null, { status: 302 }))
+		);
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()] }));
+		expect(parseLog(warn.mock.calls[0][0]).reason).toBe('redirect_rejected');
+	});
+
+	it('wraps key decryption failures without exposing ciphertext or crypto errors', async () => {
+		const ciphertext = 'secret-malformed-ciphertext';
+		await collect(
+			streamProse({ ...proseInput, endpoints: [{ ...endpoint(), apiKeyEnc: ciphertext }] })
+		);
+		expect(parseLog(warn.mock.calls[0][0]).reason).toBe('key_decryption');
+		expect(String(warn.mock.calls[0][0])).not.toContain(ciphertext);
+	});
+
+	it.each(['client_disconnect', 'lease_lost'] as const)(
+		'suppresses fallback and diagnostics for an external %s abort',
+		async (reason) => {
+			const aborter = new AbortController();
+			aborter.abort(new LlmFailure(reason, 'typed route abort'));
+			await expect(
+				collect(
+					streamProse({
+						...proseInput,
+						endpoints: [endpoint()],
+						signal: aborter.signal
+					})
+				)
+			).rejects.toMatchObject({ reason });
+			expect(warn).not.toHaveBeenCalled();
+		}
+	);
+
+	it('logs the classified reason for a pre-output HTTP failure', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response('boom', { status: 503 }))
+		);
+		const onFallbackDiagnostic = vi.fn();
+		await collect(streamProse({ ...proseInput, endpoints: [endpoint()], onFallbackDiagnostic }));
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(onFallbackDiagnostic).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('http_status');
+		expect(payload.status).toBe(503);
+	});
+
+	it('logs once for a non-streaming runPurpose fallback with no endpoints', async () => {
+		await narrateProse({ ...proseInput, endpoints: [] });
+		expect(warn).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('no_enabled_endpoint');
+		expect(payload.mode).toBe('non_stream');
+	});
+
+	it('logs invalid_structured_response when an endpoint answer cannot be interpreted', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom(['data: {"choices":[{"message":{"content":"not an interpretation"}}]}'])
+			)
+		);
+		await interpretAction({
+			system: 'system',
+			room: { type: 'monster', name: 'Watcher' },
+			actionText: 'attack',
+			endpoints: [{ ...endpoint(), purpose: 'interpretation' }],
+			diagnostics: {
+				correlationId: '44444444-4444-4444-8444-444444444444',
+				runId: '55555555-5555-4555-8555-555555555555'
+			}
+		});
+		expect(warn).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.reason).toBe('invalid_structured_response');
+		expect(payload.mode).toBe('non_stream');
+		expect(payload.correlationId).toBe('44444444-4444-4444-8444-444444444444');
+		expect(payload.runId).toBe('55555555-5555-4555-8555-555555555555');
+	});
+
+	it('propagates one request correlation through suggestion fallback diagnostics', async () => {
+		await suggestActions({
+			system: 'system',
+			room: { type: 'rest', name: 'Long Hall' },
+			endpoints: [],
+			diagnostics: {
+				correlationId: '66666666-6666-4666-8666-666666666666',
+				runId: '77777777-7777-4777-8777-777777777777'
+			}
+		});
+		expect(warn).toHaveBeenCalledTimes(1);
+		const payload = parseLog(warn.mock.calls[0][0]);
+		expect(payload.correlationId).toBe('66666666-6666-4666-8666-666666666666');
+		expect(payload.runId).toBe('77777777-7777-4777-8777-777777777777');
+	});
+
+	it('emits no diagnostics when the flag is disabled', async () => {
+		config.LLM_DIAGNOSTICS = false;
+		await collect(streamProse({ ...proseInput, endpoints: [] }));
+		expect(warn).not.toHaveBeenCalled();
 	});
 });

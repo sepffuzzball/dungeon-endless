@@ -51,7 +51,8 @@ npm run preview
 | `ALLOW_PRIVATE_LLM_URLS`   | Allows private, loopback, or link-local model hosts. Keep false unless a trusted local endpoint is intentional.       |
 | `LLM_MAX_TOKENS`           | Maximum tokens requested from a model.                                                                                |
 | `LLM_TIMEOUT_MS`           | Model request timeout.                                                                                                |
-| `LLM_MAX_RESPONSE_BYTES`   | Maximum response body read from a model.                                                                              |
+| `LLM_MAX_RESPONSE_BYTES`   | Maximum response body read from a model; defaults to 8192 bytes.                                                      |
+| `LLM_DIAGNOSTICS`          | Emits sanitized one-line fallback warnings when true; defaults to true.                                               |
 
 `DATABASE_URL` and `APP_ENCRYPTION_KEY` are always mandatory and have no application defaults. The two bootstrap variables are required only until the first administrator is created. The encryption key must be exactly 64 hexadecimal characters or canonical base64 that decodes to exactly 32 bytes. Keep `.env`, database passwords and URLs, encryption keys, model keys, backups, and cookies out of logs and source control. If `APP_ENCRYPTION_KEY` is lost or changed, existing encrypted endpoint credentials cannot be decrypted.
 
@@ -89,6 +90,26 @@ Endpoint records have one of four purposes:
 - `summary`: creates a short log summary for an already-resolved outcome.
 
 Enabled endpoints are tried in name order for their purpose. URLs and all resolved A/AAAA addresses are validated immediately before each request, redirects are not followed, reads and token counts are bounded, and failures fall through to the next endpoint. If all endpoints fail or none are configured, deterministic action heuristics, suggestions, prose, and summaries are used. Model output never controls dice, targets, rewards, health, inventory, or settlement. No model or network call occurs inside a database transaction.
+
+`LLM_MAX_RESPONSE_BYTES=8192` counts the complete SSE wire representation, including event framing and JSON overhead, not only visible model text. Verbose local token streams may need a value such as `262144`; keep a finite bound in every deployment.
+
+### LLM fallback diagnostics
+
+Fallback diagnostics are enabled by default. Follow them in a Compose deployment with:
+
+```sh
+docker compose logs -f app | grep -E 'dungeon-llm-(fallback|route-error)'
+```
+
+Each warning is one JSON object prefixed for filtering. It contains only allowlisted operational metadata, never endpoint URLs or hostnames, models, keys, authorization headers, prompts, game text, response bodies, generated text, stacks, or raw error messages. For example:
+
+```text
+[dungeon-llm-fallback] {"event":"llm_fallback","timestamp":"2026-08-29T12:00:00.000Z","correlationId":"497f6eca-6276-4993-bfeb-53cbbbba6f08","purpose":"prose","mode":"stream","reason":"http_status","endpointId":"c56a4180-65aa-42ec-a945-5fd21dec0538","configuredTimeoutMs":20000,"status":503,"bytes":0,"sseEvents":0,"parseFailures":0,"contentDeltas":0,"visibleChars":412,"runId":"b3b1557e-9937-4bd6-bbd8-13d2cf0c7d4b","targetId":"bb6b671d-32d4-4f92-958f-16e9122d4477","narrationKind":"turn"}
+```
+
+Common reasons include `no_enabled_endpoint` when no endpoint is enabled for the purpose, `timeout` when the bounded call expires, `http_status` for a non-success upstream response, `response_too_large` when the finite wire-byte limit is exceeded, `stream_parse_error` when malformed SSE events produce no text, `no_content_delta` when a successful stream closes without text, and `database_or_route_error` when a route must save deterministic text after an internal failure. Set `LLM_DIAGNOSTICS=false` to disable these warnings.
+
+`[dungeon-llm-fallback]` means the LLM layer selected or generated a deterministic fallback; it does not by itself prove that fallback was persisted or delivered. `[dungeon-llm-route-error]` uses event `llm_route_error` when the streaming route fails before durable persistence or delivery completes. A fallback event may therefore be followed by a route-error when saving or delivery then fails, and a route-error does not imply the fallback was saved. Route-error records use the same bounded reason and UUID allowlists, contain no content or raw errors, and suppress expected client disconnect and lost-lease noise.
 
 Action and room-entry prose is streamed token-by-token after authoritative resolution. Pending, streaming, complete, and failed states plus accumulated prose are persisted. A turn summary is generated and saved, with a deterministic fallback, before that turn becomes complete; proceeding therefore cannot reveal a room from an unfinished summary. Producers hold a 30-second lease, renew it independently every eight seconds even while a model is silent, and condition every write on the exact claim timestamp. Followers replay only the durable saved suffix and immediately contend for an expired lease. Disconnects release a claimed record for recovery, while recovered partial output is finalized safely instead of being duplicated. Reverse proxies must not buffer `/play/*/stream` responses. The route requires `Accept: text/event-stream` plus an exact same-origin `Origin` or `Referer`, and sends `X-Accel-Buffering: no`, `Cache-Control: no-store, no-transform`, and periodic SSE keepalives. Proxy and load-balancer streaming timeouts still need suitable deployment configuration.
 

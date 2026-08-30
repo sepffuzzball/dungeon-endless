@@ -27,6 +27,7 @@ import {
 	interpretAction,
 	suggestActions
 } from '$lib/server/llm';
+import { logLlmFallback, type LlmFallbackInput } from '$lib/server/llm-diagnostics';
 import { buildSystemPrompt } from '$lib/server/prompts';
 import {
 	achievements,
@@ -46,6 +47,22 @@ const uuidSchema = z.string().uuid();
 const ACTION_MIN_LENGTH = 1;
 const ACTION_MAX_LENGTH = 500;
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type RecoveryDiagnostic = Pick<
+	LlmFallbackInput,
+	'purpose' | 'mode' | 'reason' | 'correlationId' | 'runId' | 'targetId' | 'narrationKind'
+>;
+
+export function _emitRecoveryDiagnostics(intents: readonly RecoveryDiagnostic[]): void {
+	for (const intent of intents) logLlmFallback(intent);
+}
+
+export async function _afterCommit<T>(
+	commit: Promise<{ value: T; recoveryDiagnostics: readonly RecoveryDiagnostic[] }>
+): Promise<T> {
+	const committed = await commit;
+	_emitRecoveryDiagnostics(committed.recoveryDiagnostics);
+	return committed.value;
+}
 
 function formInteger(form: FormData, name: string): number | null {
 	const raw = form.get(name);
@@ -102,7 +119,11 @@ async function ownedRun(runId: string, userId: string) {
 	return row;
 }
 
-async function finalizeTurnFallback(tx: Transaction, turn: typeof turns.$inferSelect) {
+async function finalizeTurnFallback(
+	tx: Transaction,
+	turn: typeof turns.$inferSelect,
+	correlationId: string
+) {
 	const summary = fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome);
 	const narration = fallbackProse(
 		turn.roomSnapshot,
@@ -130,25 +151,37 @@ async function finalizeTurnFallback(tx: Transaction, turn: typeof turns.$inferSe
 		// Another producer already finalized this turn. Reread the durable
 		// narration and summary without overwriting run.summary.
 		const [current] = await tx.select().from(turns).where(eq(turns.id, turn.id)).limit(1);
-		if (!current) return { narration, summary };
+		if (!current) return { narration, summary, finalized: false, diagnostics: [] };
 		return {
 			narration: current.narration || narration,
-			summary: current.turnSummary || summary
+			summary: current.turnSummary || summary,
+			finalized: false,
+			diagnostics: []
 		};
 	}
+	const diagnostics: RecoveryDiagnostic[] = (['prose', 'summary'] as const).map((purpose) => ({
+		purpose,
+		mode: 'non_enhanced',
+		reason: 'recovery_fallback',
+		correlationId,
+		runId: turn.runId,
+		targetId: turn.id,
+		narrationKind: 'turn'
+	}));
 	await tx
 		.update(runs)
 		.set({ summary })
 		.where(and(eq(runs.id, turn.runId), eq(runs.version, turn.sequence)));
-	return { narration, summary };
+	return { narration, summary, finalized: true, diagnostics };
 }
 
 async function finalizeRoomFallback(
 	tx: Transaction,
 	entry: typeof roomEntries.$inferSelect,
-	runSummary: string
+	runSummary: string,
+	correlationId: string
 ) {
-	await tx
+	const finalized = await tx
 		.update(roomEntries)
 		.set({
 			prose: fallbackRoomEntry(entry.roomSnapshot, runSummary),
@@ -161,7 +194,23 @@ async function finalizeRoomFallback(
 				eq(roomEntries.id, entry.id),
 				or(eq(roomEntries.status, 'pending'), eq(roomEntries.status, 'streaming'))
 			)
-		);
+		)
+		.returning({ id: roomEntries.id });
+	const diagnostics: RecoveryDiagnostic[] =
+		finalized.length > 0
+			? [
+					{
+						purpose: 'room_prose',
+						mode: 'non_enhanced',
+						reason: 'recovery_fallback',
+						correlationId,
+						runId: entry.runId,
+						targetId: entry.id,
+						narrationKind: 'room'
+					}
+				]
+			: [];
+	return { finalized: finalized.length > 0, diagnostics };
 }
 
 /** Minimal shapes so callers can pass full row types while tests use lightweight fixtures. */
@@ -281,7 +330,8 @@ export const load: PageServerLoad = async (event) => {
 		const generatedSuggestions = await suggestActions({
 			system: systemPrompt(owned.run, owned.character),
 			room: owned.run.roomData,
-			endpoints
+			endpoints,
+			diagnostics: { correlationId: randomUUID(), runId: owned.run.id }
 		});
 		const candidates = [
 			...generatedSuggestions,
@@ -391,6 +441,7 @@ export const actions: Actions = {
 		assertSameOrigin(event);
 		const user = requireUser(event);
 		const enhanced = event.request.headers.get('x-sveltekit-action') === 'true';
+		const correlationId = randomUUID();
 		const runId = uuidSchema.safeParse(event.params.runId);
 		if (!runId.success) return fail(400, { error: 'Invalid run.' });
 
@@ -420,10 +471,20 @@ export const actions: Actions = {
 						system: systemPrompt(preflight.run, preflight.character),
 						room: preflight.run.roomData,
 						actionText,
-						endpoints
+						endpoints,
+						diagnostics: { correlationId, runId: preflight.run.id }
 					});
 				})()
 			: mapActionIntent({ text: actionText, room: preflight.run.roomData });
+		if (!enhanced) {
+			logLlmFallback({
+				purpose: 'interpretation',
+				mode: 'non_enhanced',
+				reason: 'non_enhanced_request',
+				correlationId,
+				runId: preflight.run.id
+			});
+		}
 		const intent = toTurnIntent(normalizeActionIntent(preflight.run.roomData, mapped));
 
 		type Resolution =
@@ -438,219 +499,231 @@ export const actions: Actions = {
 
 		let resolution: Resolution;
 		try {
-			resolution = await db.transaction(async (tx): Promise<Resolution> => {
-				const [run] = await tx
-					.select()
-					.from(runs)
-					.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
-					.limit(1)
-					.for('update');
-				if (!run) return { kind: 'failure', status: 404, message: 'Run not found.' };
+			resolution = await _afterCommit(
+				db.transaction(async (tx) => {
+					const recoveryDiagnostics: RecoveryDiagnostic[] = [];
+					const done = (value: Resolution) => ({ value, recoveryDiagnostics });
+					const [run] = await tx
+						.select()
+						.from(runs)
+						.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
+						.limit(1)
+						.for('update');
+					if (!run) return done({ kind: 'failure', status: 404, message: 'Run not found.' });
 
-				const [duplicate] = await tx
-					.select()
-					.from(turns)
-					.where(and(eq(turns.runId, run.id), eq(turns.actionKey, actionKey.data)))
-					.limit(1);
-				if (duplicate) {
-					if (duplicate.sequence !== expectedVersion + 1) {
-						return {
-							kind: 'failure',
-							status: 409,
-							message: 'This action key was already used for another turn.'
-						};
-					}
-					if (!enhanced) {
-						if (
-							duplicate.narrationStatus === 'pending' ||
-							duplicate.narrationStatus === 'streaming'
-						) {
-							await finalizeTurnFallback(tx, duplicate);
+					const [duplicate] = await tx
+						.select()
+						.from(turns)
+						.where(and(eq(turns.runId, run.id), eq(turns.actionKey, actionKey.data)))
+						.limit(1);
+					if (duplicate) {
+						if (duplicate.sequence !== expectedVersion + 1) {
+							return done({
+								kind: 'failure',
+								status: 409,
+								message: 'This action key was already used for another turn.'
+							});
 						}
+						if (!enhanced) {
+							if (
+								duplicate.narrationStatus === 'pending' ||
+								duplicate.narrationStatus === 'streaming'
+							) {
+								const recovered = await finalizeTurnFallback(tx, duplicate, correlationId);
+								recoveryDiagnostics.push(...recovered.diagnostics);
+							}
+						}
+						return done({
+							kind: 'duplicate',
+							turnId: duplicate.id,
+							roomEntryId: null,
+							version: duplicate.sequence
+						});
 					}
-					return {
-						kind: 'duplicate',
-						turnId: duplicate.id,
-						roomEntryId: null,
-						version: duplicate.sequence
-					};
-				}
-				if (run.status !== 'active') {
-					return { kind: 'failure', status: 409, message: 'This run is already finished.' };
-				}
-				if (run.version !== expectedVersion) {
-					return {
-						kind: 'failure',
-						status: 409,
-						message: 'This action is stale. Reload the room and choose again.'
-					};
-				}
-				if (run.phase !== 'ready') {
-					return {
-						kind: 'failure',
-						status: 409,
-						message: 'Proceed deeper before choosing another action.'
-					};
-				}
-				const [entryState] = await tx
-					.select()
-					.from(roomEntries)
-					.where(and(eq(roomEntries.runId, run.id), eq(roomEntries.roomNumber, run.roomNumber)))
-					.limit(1)
-					.for('update');
-				if (!entryState) {
-					return {
-						kind: 'failure',
-						status: 409,
-						message: 'The current room record is missing. Reload and try again.'
-					};
-				}
-				if (entryState.status !== 'complete' && entryState.status !== 'failed') {
-					if (enhanced) {
-						return {
+					if (run.status !== 'active') {
+						return done({ kind: 'failure', status: 409, message: 'This run is already finished.' });
+					}
+					if (run.version !== expectedVersion) {
+						return done({
 							kind: 'failure',
 							status: 409,
-							message: 'Wait for the current room narration to finish before acting.'
-						};
+							message: 'This action is stale. Reload the room and choose again.'
+						});
 					}
-					await tx
-						.update(roomEntries)
-						.set({
-							prose: fallbackRoomEntry(entryState.roomSnapshot, ''),
-							status: 'complete',
-							startedAt: null,
-							updatedAt: new Date()
-						})
-						.where(eq(roomEntries.id, entryState.id));
-				}
+					if (run.phase !== 'ready') {
+						return done({
+							kind: 'failure',
+							status: 409,
+							message: 'Proceed deeper before choosing another action.'
+						});
+					}
+					const [entryState] = await tx
+						.select()
+						.from(roomEntries)
+						.where(and(eq(roomEntries.runId, run.id), eq(roomEntries.roomNumber, run.roomNumber)))
+						.limit(1)
+						.for('update');
+					if (!entryState) {
+						return done({
+							kind: 'failure',
+							status: 409,
+							message: 'The current room record is missing. Reload and try again.'
+						});
+					}
+					if (entryState.status !== 'complete' && entryState.status !== 'failed') {
+						if (enhanced) {
+							return done({
+								kind: 'failure',
+								status: 409,
+								message: 'Wait for the current room narration to finish before acting.'
+							});
+						}
+						const recovered = await finalizeRoomFallback(tx, entryState, '', correlationId);
+						recoveryDiagnostics.push(...recovered.diagnostics);
+					}
 
-				const [character] = await tx
-					.select()
-					.from(characters)
-					.where(and(eq(characters.id, run.characterId), eq(characters.userId, user.id)))
-					.limit(1)
-					.for('update');
-				if (!character) {
-					return { kind: 'failure', status: 404, message: 'Hero not found.' };
-				}
-				// Gameplay lock order: run, owned character, then user.
-				const [account] = await tx
-					.select()
-					.from(users)
-					.where(eq(users.id, user.id))
-					.limit(1)
-					.for('update');
-				if (!account) return { kind: 'failure', status: 404, message: 'Company not found.' };
+					const [character] = await tx
+						.select()
+						.from(characters)
+						.where(and(eq(characters.id, run.characterId), eq(characters.userId, user.id)))
+						.limit(1)
+						.for('update');
+					if (!character) {
+						return done({ kind: 'failure', status: 404, message: 'Hero not found.' });
+					}
+					// Gameplay lock order: run, owned character, then user.
+					const [account] = await tx
+						.select()
+						.from(users)
+						.where(eq(users.id, user.id))
+						.limit(1)
+						.for('update');
+					if (!account)
+						return done({ kind: 'failure', status: 404, message: 'Company not found.' });
 
-				const sequence = run.version + 1;
-				const roomSnapshot = { ...structuredClone(run.roomData), roomNumber: run.roomNumber };
-				const level = run.meta.startLevel ?? run.roomData.run?.startLevel ?? character.level;
-				const baseStats = resolveRunBaseStats(run.meta, character);
-				const stats = deriveStats({
-					body: baseStats.body,
-					mind: baseStats.mind,
-					spirit: baseStats.spirit,
-					level,
-					hp: run.hp,
-					maxHp: run.maxHp,
-					defense: 5 + level,
-					attackBonus: baseStats.body + level,
-					inventory: run.inventory
-				});
-				const encounter = resolveEncounter({
-					seed: run.seed,
-					roomNumber: run.roomNumber,
-					turn: sequence,
-					room: structuredClone(roomSnapshot),
-					intent,
-					stats,
-					hp: run.hp,
-					maxHp: run.maxHp
-				});
-				const fallbackTurnSummary = fallbackSummary(roomSnapshot, actionText, encounter.outcome);
-				const [turn] = await tx
-					.insert(turns)
-					.values({
-						runId: run.id,
-						sequence,
-						actionKey: actionKey.data,
-						actionText,
-						intent,
-						roomSnapshot,
-						rolls: encounter.rolls,
-						outcome: encounter.outcome,
-						narration: enhanced
-							? ''
-							: fallbackProse(roomSnapshot, actionText, encounter.outcome, encounter.rolls),
-						narrationStatus: enhanced ? 'pending' : 'complete',
-						narrationUpdatedAt: enhanced ? null : new Date(),
-						turnSummary: fallbackTurnSummary
-					})
-					.returning({ id: turns.id });
-
-				const inventory = [...run.inventory, ...(encounter.outcome.rewards ?? [])];
-				if (encounter.outcome.hpAfter <= 0) {
-					const completedRun = { ...run, inventory, version: sequence };
-					const gold = settlementGold(
-						completedRun.inventory,
-						completedRun.seed,
-						completedRun.roomNumber,
-						completedRun.version
-					);
-					await tx
-						.update(characters)
-						.set({
-							furthestFloor: sql`greatest(${characters.furthestFloor}, ${run.roomNumber})`,
-							updatedAt: new Date()
-						})
-						.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
-					const companyGold = checkedCompanyGoldAdd(account.companyGold, gold);
-					await tx
-						.update(users)
-						.set({ companyGold, updatedAt: new Date() })
-						.where(eq(users.id, user.id));
-					await tx
-						.update(runs)
-						.set({
-							status: 'defeated',
-							finishedAt: new Date(),
-							hp: 0,
-							inventory: [],
-							version: sequence,
-							summary: fallbackTurnSummary
-						})
-						.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
-					await award(tx, user.id, {
-						firstDefeat: true,
-						roomNumber: run.roomNumber,
-						gold: companyGold
+					const sequence = run.version + 1;
+					const roomSnapshot = { ...structuredClone(run.roomData), roomNumber: run.roomNumber };
+					const level = run.meta.startLevel ?? run.roomData.run?.startLevel ?? character.level;
+					const baseStats = resolveRunBaseStats(run.meta, character);
+					const stats = deriveStats({
+						body: baseStats.body,
+						mind: baseStats.mind,
+						spirit: baseStats.spirit,
+						level,
+						hp: run.hp,
+						maxHp: run.maxHp,
+						defense: 5 + level,
+						attackBonus: baseStats.body + level,
+						inventory: run.inventory
 					});
-				} else {
-					await tx
-						.update(runs)
-						.set({
-							hp: encounter.outcome.hpAfter,
-							inventory,
-							version: sequence,
-							phase: 'awaiting_proceed',
-							summary: fallbackTurnSummary
+					const encounter = resolveEncounter({
+						seed: run.seed,
+						roomNumber: run.roomNumber,
+						turn: sequence,
+						room: structuredClone(roomSnapshot),
+						intent,
+						stats,
+						hp: run.hp,
+						maxHp: run.maxHp
+					});
+					const fallbackTurnSummary = fallbackSummary(roomSnapshot, actionText, encounter.outcome);
+					const [turn] = await tx
+						.insert(turns)
+						.values({
+							runId: run.id,
+							sequence,
+							actionKey: actionKey.data,
+							actionText,
+							intent,
+							roomSnapshot,
+							rolls: encounter.rolls,
+							outcome: encounter.outcome,
+							narration: enhanced
+								? ''
+								: fallbackProse(roomSnapshot, actionText, encounter.outcome, encounter.rolls),
+							narrationStatus: enhanced ? 'pending' : 'complete',
+							narrationUpdatedAt: enhanced ? null : new Date(),
+							turnSummary: fallbackTurnSummary
 						})
-						.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
-				}
+						.returning({ id: turns.id });
 
-				return {
-					kind: 'resolved',
-					turnId: turn.id,
-					roomEntryId: null,
-					version: sequence
-				};
-			});
+					const inventory = [...run.inventory, ...(encounter.outcome.rewards ?? [])];
+					if (encounter.outcome.hpAfter <= 0) {
+						const completedRun = { ...run, inventory, version: sequence };
+						const gold = settlementGold(
+							completedRun.inventory,
+							completedRun.seed,
+							completedRun.roomNumber,
+							completedRun.version
+						);
+						await tx
+							.update(characters)
+							.set({
+								furthestFloor: sql`greatest(${characters.furthestFloor}, ${run.roomNumber})`,
+								updatedAt: new Date()
+							})
+							.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
+						const companyGold = checkedCompanyGoldAdd(account.companyGold, gold);
+						await tx
+							.update(users)
+							.set({ companyGold, updatedAt: new Date() })
+							.where(eq(users.id, user.id));
+						await tx
+							.update(runs)
+							.set({
+								status: 'defeated',
+								finishedAt: new Date(),
+								hp: 0,
+								inventory: [],
+								version: sequence,
+								summary: fallbackTurnSummary
+							})
+							.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
+						await award(tx, user.id, {
+							firstDefeat: true,
+							roomNumber: run.roomNumber,
+							gold: companyGold
+						});
+					} else {
+						await tx
+							.update(runs)
+							.set({
+								hp: encounter.outcome.hpAfter,
+								inventory,
+								version: sequence,
+								phase: 'awaiting_proceed',
+								summary: fallbackTurnSummary
+							})
+							.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
+					}
+
+					return done({
+						kind: 'resolved',
+						turnId: turn.id,
+						roomEntryId: null,
+						version: sequence
+					});
+				})
+			);
 		} catch {
 			return fail(500, { error: 'The action could not be resolved. Please try again.' });
 		}
 
 		if (resolution.kind === 'failure') {
 			return fail(resolution.status, { error: resolution.message });
+		}
+		if (!enhanced && resolution.kind === 'resolved') {
+			for (const purpose of ['prose', 'summary'] as const) {
+				logLlmFallback({
+					purpose,
+					mode: 'non_enhanced',
+					reason: 'non_enhanced_request',
+					correlationId,
+					runId: runId.data,
+					targetId: resolution.turnId,
+					narrationKind: 'turn'
+				});
+			}
 		}
 		if (!enhanced) throw redirect(303, `/play/${runId.data}`);
 		return {
@@ -665,6 +738,7 @@ export const actions: Actions = {
 		assertSameOrigin(event);
 		const user = requireUser(event);
 		const enhanced = event.request.headers.get('x-sveltekit-action') === 'true';
+		const correlationId = randomUUID();
 		const runId = uuidSchema.safeParse(event.params.runId);
 		if (!runId.success) return fail(400, { error: 'Invalid run.' });
 		const form = await event.request.formData();
@@ -685,164 +759,185 @@ export const actions: Actions = {
 			| { kind: 'failure'; status: number; message: string };
 		let result: ProceedResult;
 		try {
-			result = await db.transaction(async (tx): Promise<ProceedResult> => {
-				const [run] = await tx
-					.select()
-					.from(runs)
-					.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
-					.limit(1)
-					.for('update');
-				if (!run) return { kind: 'failure', status: 404, message: 'Run not found.' };
+			result = await _afterCommit(
+				db.transaction(async (tx) => {
+					const recoveryDiagnostics: RecoveryDiagnostic[] = [];
+					const done = (value: ProceedResult) => ({ value, recoveryDiagnostics });
+					const [run] = await tx
+						.select()
+						.from(runs)
+						.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
+						.limit(1)
+						.for('update');
+					if (!run) return done({ kind: 'failure', status: 404, message: 'Run not found.' });
 
-				const [duplicate] = await tx
-					.select()
-					.from(roomEntries)
-					.where(and(eq(roomEntries.runId, run.id), eq(roomEntries.commandKey, commandKey.data)))
-					.limit(1);
-				if (duplicate) {
-					if (duplicate.runVersion !== expectedVersion) {
-						return {
+					const [duplicate] = await tx
+						.select()
+						.from(roomEntries)
+						.where(and(eq(roomEntries.runId, run.id), eq(roomEntries.commandKey, commandKey.data)))
+						.limit(1);
+					if (duplicate) {
+						if (duplicate.runVersion !== expectedVersion) {
+							return done({
+								kind: 'failure',
+								status: 409,
+								message: 'This proceed key was already used for another turn.'
+							});
+						}
+						if (!enhanced) {
+							const [turn] = await tx
+								.select()
+								.from(turns)
+								.where(and(eq(turns.runId, run.id), eq(turns.sequence, expectedVersion)))
+								.limit(1);
+							let summary = run.summary;
+							if (
+								turn &&
+								(turn.narrationStatus === 'pending' || turn.narrationStatus === 'streaming')
+							) {
+								const recovered = await finalizeTurnFallback(tx, turn, correlationId);
+								summary = recovered.summary;
+								recoveryDiagnostics.push(...recovered.diagnostics);
+							}
+							if (duplicate.status === 'pending' || duplicate.status === 'streaming') {
+								const recovered = await finalizeRoomFallback(tx, duplicate, summary, correlationId);
+								recoveryDiagnostics.push(...recovered.diagnostics);
+							}
+						}
+						return done({
+							kind: 'duplicate',
+							roomEntryId: duplicate.id,
+							version: duplicate.runVersion
+						});
+					}
+
+					if (run.status !== 'active') {
+						return done({ kind: 'failure', status: 409, message: 'This run is already finished.' });
+					}
+					if (run.version !== expectedVersion) {
+						return done({
 							kind: 'failure',
 							status: 409,
-							message: 'This proceed key was already used for another turn.'
-						};
+							message: 'This proceed command is stale. Reload the room and try again.'
+						});
 					}
-					if (!enhanced) {
-						const [turn] = await tx
-							.select()
-							.from(turns)
-							.where(and(eq(turns.runId, run.id), eq(turns.sequence, expectedVersion)))
-							.limit(1);
-						let summary = run.summary;
-						if (
-							turn &&
-							(turn.narrationStatus === 'pending' || turn.narrationStatus === 'streaming')
-						) {
-							summary = (await finalizeTurnFallback(tx, turn)).summary;
-						}
-						if (duplicate.status === 'pending' || duplicate.status === 'streaming') {
-							await finalizeRoomFallback(tx, duplicate, summary);
-						}
-					}
-					return {
-						kind: 'duplicate',
-						roomEntryId: duplicate.id,
-						version: duplicate.runVersion
-					};
-				}
-
-				if (run.status !== 'active') {
-					return { kind: 'failure', status: 409, message: 'This run is already finished.' };
-				}
-				if (run.version !== expectedVersion) {
-					return {
-						kind: 'failure',
-						status: 409,
-						message: 'This proceed command is stale. Reload the room and try again.'
-					};
-				}
-				if (run.phase !== 'awaiting_proceed') {
-					return {
-						kind: 'failure',
-						status: 409,
-						message: 'This expedition is not waiting to proceed.'
-					};
-				}
-
-				const [turn] = await tx
-					.select()
-					.from(turns)
-					.where(and(eq(turns.runId, run.id), eq(turns.sequence, run.version)))
-					.limit(1);
-				if (!turn || turn.roomSnapshot.roomNumber !== run.roomNumber) {
-					return {
-						kind: 'failure',
-						status: 409,
-						message: 'The resolved turn does not match this room. Reload and try again.'
-					};
-				}
-				let summary = turn.turnSummary || run.summary;
-				if (turn.narrationStatus !== 'complete' && turn.narrationStatus !== 'failed') {
-					if (enhanced) {
-						return {
+					if (run.phase !== 'awaiting_proceed') {
+						return done({
 							kind: 'failure',
 							status: 409,
-							message: 'Wait for the action narration to finish before proceeding.'
-						};
+							message: 'This expedition is not waiting to proceed.'
+						});
 					}
-					summary = (await finalizeTurnFallback(tx, turn)).summary;
-				}
 
-				const [character] = await tx
-					.select()
-					.from(characters)
-					.where(and(eq(characters.id, run.characterId), eq(characters.userId, user.id)))
-					.limit(1)
-					.for('update');
-				if (!character) return { kind: 'failure', status: 404, message: 'Hero not found.' };
-				const [account] = await tx
-					.select()
-					.from(users)
-					.where(eq(users.id, user.id))
-					.limit(1)
-					.for('update');
-				if (!account) return { kind: 'failure', status: 404, message: 'Company not found.' };
+					const [turn] = await tx
+						.select()
+						.from(turns)
+						.where(and(eq(turns.runId, run.id), eq(turns.sequence, run.version)))
+						.limit(1);
+					if (!turn || turn.roomSnapshot.roomNumber !== run.roomNumber) {
+						return done({
+							kind: 'failure',
+							status: 409,
+							message: 'The resolved turn does not match this room. Reload and try again.'
+						});
+					}
+					let summary = turn.turnSummary || run.summary;
+					if (turn.narrationStatus !== 'complete' && turn.narrationStatus !== 'failed') {
+						if (enhanced) {
+							return done({
+								kind: 'failure',
+								status: 409,
+								message: 'Wait for the action narration to finish before proceeding.'
+							});
+						}
+						const recovered = await finalizeTurnFallback(tx, turn, correlationId);
+						summary = recovered.summary;
+						recoveryDiagnostics.push(...recovered.diagnostics);
+					}
 
-				const nextNumber = run.roomNumber + 1;
-				const generated = generateRoom({
-					seed: run.seed,
-					room: nextNumber,
-					turn: run.version,
-					debauchery: run.debauchery,
-					monsters: monsterRows,
-					traps: trapRows
-				});
-				const nextRoom = {
-					...generated,
-					roomNumber: nextNumber,
-					...(run.roomData.run ? { run: run.roomData.run } : {})
-				};
-				await tx
-					.update(runs)
-					.set({
+					const [character] = await tx
+						.select()
+						.from(characters)
+						.where(and(eq(characters.id, run.characterId), eq(characters.userId, user.id)))
+						.limit(1)
+						.for('update');
+					if (!character) return done({ kind: 'failure', status: 404, message: 'Hero not found.' });
+					const [account] = await tx
+						.select()
+						.from(users)
+						.where(eq(users.id, user.id))
+						.limit(1)
+						.for('update');
+					if (!account)
+						return done({ kind: 'failure', status: 404, message: 'Company not found.' });
+
+					const nextNumber = run.roomNumber + 1;
+					const generated = generateRoom({
+						seed: run.seed,
+						room: nextNumber,
+						turn: run.version,
+						debauchery: run.debauchery,
+						monsters: monsterRows,
+						traps: trapRows
+					});
+					const nextRoom = {
+						...generated,
 						roomNumber: nextNumber,
-						roomType: generated.type,
-						roomData: nextRoom,
-						phase: 'ready',
-						summary
-					})
-					.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
-				const [entry] = await tx
-					.insert(roomEntries)
-					.values({
-						runId: run.id,
-						commandKey: commandKey.data,
+						...(run.roomData.run ? { run: run.roomData.run } : {})
+					};
+					await tx
+						.update(runs)
+						.set({
+							roomNumber: nextNumber,
+							roomType: generated.type,
+							roomData: nextRoom,
+							phase: 'ready',
+							summary
+						})
+						.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
+					const [entry] = await tx
+						.insert(roomEntries)
+						.values({
+							runId: run.id,
+							commandKey: commandKey.data,
+							roomNumber: nextNumber,
+							runVersion: run.version,
+							roomSnapshot: nextRoom,
+							prose: enhanced ? '' : fallbackRoomEntry(nextRoom, summary),
+							status: enhanced ? 'pending' : 'complete',
+							updatedAt: enhanced ? null : new Date()
+						})
+						.returning({ id: roomEntries.id });
+					await tx
+						.update(characters)
+						.set({
+							furthestFloor: sql`greatest(${characters.furthestFloor}, ${nextNumber})`,
+							updatedAt: new Date()
+						})
+						.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
+					await award(tx, user.id, {
+						firstDefeat: false,
 						roomNumber: nextNumber,
-						runVersion: run.version,
-						roomSnapshot: nextRoom,
-						prose: enhanced ? '' : fallbackRoomEntry(nextRoom, summary),
-						status: enhanced ? 'pending' : 'complete',
-						updatedAt: enhanced ? null : new Date()
-					})
-					.returning({ id: roomEntries.id });
-				await tx
-					.update(characters)
-					.set({
-						furthestFloor: sql`greatest(${characters.furthestFloor}, ${nextNumber})`,
-						updatedAt: new Date()
-					})
-					.where(and(eq(characters.id, character.id), eq(characters.userId, user.id)));
-				await award(tx, user.id, {
-					firstDefeat: false,
-					roomNumber: nextNumber,
-					gold: account.companyGold
-				});
-				return { kind: 'proceeded', roomEntryId: entry.id, version: run.version };
-			});
+						gold: account.companyGold
+					});
+					return done({ kind: 'proceeded', roomEntryId: entry.id, version: run.version });
+				})
+			);
 		} catch {
 			return fail(500, { error: 'The next room could not be generated. Please try again.' });
 		}
 		if (result.kind === 'failure') return fail(result.status, { error: result.message });
+		if (!enhanced && result.kind === 'proceeded') {
+			logLlmFallback({
+				purpose: 'room_prose',
+				mode: 'non_enhanced',
+				reason: 'non_enhanced_request',
+				correlationId,
+				runId: runId.data,
+				targetId: result.roomEntryId,
+				narrationKind: 'room'
+			});
+		}
 		if (!enhanced) throw redirect(303, `/play/${runId.data}`);
 		return {
 			success: true,

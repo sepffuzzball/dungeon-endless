@@ -22,6 +22,7 @@ const configSchema = z.object({
 	LLM_MAX_TOKENS: z.number().int().positive().default(600),
 	LLM_TIMEOUT_MS: z.number().int().positive().default(20000),
 	LLM_MAX_RESPONSE_BYTES: z.number().int().positive().default(8192),
+	LLM_DIAGNOSTICS: z.boolean().default(true),
 	BOOTSTRAP_ADMIN_USERNAME: z.string().optional(),
 	BOOTSTRAP_ADMIN_PASSWORD: z.string().optional()
 });
@@ -40,6 +41,7 @@ function loadConfig(): Config {
 		LLM_MAX_TOKENS: intFromEnv(process.env.LLM_MAX_TOKENS, 600),
 		LLM_TIMEOUT_MS: intFromEnv(process.env.LLM_TIMEOUT_MS, 20000),
 		LLM_MAX_RESPONSE_BYTES: intFromEnv(process.env.LLM_MAX_RESPONSE_BYTES, 8192),
+		LLM_DIAGNOSTICS: boolFromEnv(process.env.LLM_DIAGNOSTICS, true),
 		BOOTSTRAP_ADMIN_USERNAME: process.env.BOOTSTRAP_ADMIN_USERNAME,
 		BOOTSTRAP_ADMIN_PASSWORD: process.env.BOOTSTRAP_ADMIN_PASSWORD
 	});

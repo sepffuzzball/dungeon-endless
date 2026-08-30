@@ -129,6 +129,34 @@ describe('logLlmFallback', () => {
 		expect(line).not.toContain('not-a-uuid-secret');
 	});
 
+	it('serializes strictly numeric LLM limit fields when provided', () => {
+		logLlmFallback({
+			...minimal,
+			reason: 'response_too_large',
+			configuredMaxTokens: 900,
+			configuredResponseByteLimit: 65536
+		});
+		const line = warn.mock.calls[0][0] as string;
+		const payload = parseLog(line);
+		expect(payload.configuredMaxTokens).toBe(900);
+		expect(payload.configuredResponseByteLimit).toBe(65536);
+	});
+
+	it('never serializes non-numeric or unsafe values for LLM limit fields', () => {
+		const secret = 'sk-secret-max-tokens';
+		logLlmFallback({
+			...minimal,
+			configuredMaxTokens: secret as unknown as number,
+			configuredResponseByteLimit: 'secret-response-bytes' as unknown as number
+		});
+		const line = warn.mock.calls[0][0] as string;
+		const payload = parseLog(line);
+		expect(payload).not.toHaveProperty('configuredMaxTokens');
+		expect(payload).not.toHaveProperty('configuredResponseByteLimit');
+		expect(line).not.toContain(secret);
+		expect(line).not.toContain('secret-response-bytes');
+	});
+
 	it('never throws even when console.warn itself throws', () => {
 		warn.mockImplementation(() => {
 			throw new Error('console broken');

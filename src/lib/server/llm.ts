@@ -547,6 +547,8 @@ async function runPurpose(
 			mode: 'non_stream',
 			reason: 'no_enabled_endpoint',
 			configuredTimeoutMs: opts.timeoutMs ?? config.LLM_TIMEOUT_MS,
+			configuredMaxTokens: opts.maxTokens ?? config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			visibleChars: fallback.length,
 			...contextFields(diagnostics)
 		});
@@ -557,6 +559,8 @@ async function runPurpose(
 			reason: classifyLlmFailure(lastError),
 			endpointId: lastEndpoint?.id,
 			configuredTimeoutMs: opts.timeoutMs ?? lastEndpoint?.timeoutMs ?? config.LLM_TIMEOUT_MS,
+			configuredMaxTokens: opts.maxTokens ?? config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			...(lastError instanceof LlmFailure && lastError.status !== undefined
 				? { status: lastError.status }
 				: {}),
@@ -905,6 +909,8 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 			mode: 'stream',
 			reason: 'no_enabled_endpoint',
 			configuredTimeoutMs: config.LLM_TIMEOUT_MS,
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			visibleChars: fallback.length,
 			...contextFields(diagnostics)
 		});
@@ -946,6 +952,8 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 			reason: failure.reason,
 			endpointId: endpoint.id,
 			configuredTimeoutMs,
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			...(failure.status !== undefined ? { status: failure.status } : {}),
 			bytes: stats.bytes,
 			sseEvents: stats.sseEvents,
@@ -968,6 +976,8 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 			reason: stats.parseFailures > 0 ? 'stream_parse_error' : 'no_content_delta',
 			endpointId: endpoint.id,
 			configuredTimeoutMs,
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			bytes: stats.bytes,
 			sseEvents: stats.sseEvents,
 			parseFailures: stats.parseFailures,
@@ -1010,6 +1020,8 @@ export async function* streamRoomEntry(input: RoomEntryStreamInput): AsyncGenera
 			mode: 'stream',
 			reason: 'no_enabled_endpoint',
 			configuredTimeoutMs: config.LLM_TIMEOUT_MS,
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			visibleChars: fallback.length,
 			...contextFields(diagnostics)
 		});
@@ -1057,6 +1069,8 @@ export async function* streamRoomEntry(input: RoomEntryStreamInput): AsyncGenera
 			reason: failure.reason,
 			endpointId: endpoint.id,
 			configuredTimeoutMs,
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			...(failure.status !== undefined ? { status: failure.status } : {}),
 			bytes: stats.bytes,
 			sseEvents: stats.sseEvents,
@@ -1079,6 +1093,8 @@ export async function* streamRoomEntry(input: RoomEntryStreamInput): AsyncGenera
 			reason: stats.parseFailures > 0 ? 'stream_parse_error' : 'no_content_delta',
 			endpointId: endpoint.id,
 			configuredTimeoutMs,
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			bytes: stats.bytes,
 			sseEvents: stats.sseEvents,
 			parseFailures: stats.parseFailures,
@@ -1124,6 +1140,8 @@ export async function interpretAction(input: InterpretationInput): Promise<Mappe
 			purpose: 'interpretation',
 			mode: 'non_stream',
 			reason: 'invalid_structured_response',
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			visibleChars: content.length,
 			...contextFields(input.diagnostics)
 		});
@@ -1189,6 +1207,8 @@ export async function suggestActions(input: SuggestionsInput): Promise<Suggested
 			purpose: 'suggestions',
 			mode: 'non_stream',
 			reason: 'invalid_structured_response',
+			configuredMaxTokens: config.LLM_MAX_TOKENS,
+			configuredResponseByteLimit: config.LLM_MAX_RESPONSE_BYTES,
 			visibleChars: content.length,
 			...contextFields(input.diagnostics)
 		});

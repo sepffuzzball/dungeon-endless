@@ -51,6 +51,10 @@ function safeReason(value: unknown): LlmFallbackReason {
 		: 'unknown';
 }
 
+function safeNumber(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
 export type LlmFallbackPurpose =
 	'prose' | 'room_prose' | 'summary' | 'interpretation' | 'suggestions';
 
@@ -64,6 +68,8 @@ export interface LlmFallbackInput {
 	reason: LlmFallbackReason;
 	endpointId?: string;
 	configuredTimeoutMs?: number;
+	configuredMaxTokens?: number;
+	configuredResponseByteLimit?: number;
 	status?: number;
 	bytes?: number;
 	sseEvents?: number;
@@ -85,6 +91,8 @@ export interface LlmFallbackEvent {
 	reason: LlmFallbackReason;
 	endpointId?: string;
 	configuredTimeoutMs?: number;
+	configuredMaxTokens?: number;
+	configuredResponseByteLimit?: number;
 	status?: number;
 	bytes?: number;
 	sseEvents?: number;
@@ -140,6 +148,8 @@ export function logLlmFallback(input: LlmFallbackInput): void {
 		const endpointId = safeUuid(input.endpointId);
 		const runId = safeUuid(input.runId);
 		const targetId = safeUuid(input.targetId);
+		const configuredMaxTokens = safeNumber(input.configuredMaxTokens);
+		const configuredResponseByteLimit = safeNumber(input.configuredResponseByteLimit);
 		const event: LlmFallbackEvent = {
 			event: LLM_FALLBACK_EVENT_NAME,
 			timestamp: new Date().toISOString(),
@@ -151,6 +161,8 @@ export function logLlmFallback(input: LlmFallbackInput): void {
 			...(input.configuredTimeoutMs !== undefined
 				? { configuredTimeoutMs: input.configuredTimeoutMs }
 				: {}),
+			...(configuredMaxTokens !== undefined ? { configuredMaxTokens } : {}),
+			...(configuredResponseByteLimit !== undefined ? { configuredResponseByteLimit } : {}),
 			...(input.status !== undefined ? { status: input.status } : {}),
 			...(input.bytes !== undefined ? { bytes: input.bytes } : {}),
 			...(input.sseEvents !== undefined ? { sseEvents: input.sseEvents } : {}),

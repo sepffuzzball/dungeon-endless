@@ -393,6 +393,9 @@ describe('fallback diagnostics', () => {
 		expect(payload.reason).toBe('no_enabled_endpoint');
 		expect(payload.mode).toBe('stream');
 		expect(payload.purpose).toBe('prose');
+		expect(payload.configuredMaxTokens).toBe(config.LLM_MAX_TOKENS);
+		expect(payload.configuredResponseByteLimit).toBe(config.LLM_MAX_RESPONSE_BYTES);
+		expect(payload).not.toHaveProperty('name');
 	});
 
 	it('logs no_content_delta when the stream closes without text', async () => {
@@ -684,6 +687,8 @@ describe('fallback diagnostics', () => {
 		const payload = parseLog(warn.mock.calls[0][0]);
 		expect(payload.reason).toBe('no_enabled_endpoint');
 		expect(payload.mode).toBe('non_stream');
+		expect(payload.configuredMaxTokens).toBe(config.LLM_MAX_TOKENS);
+		expect(payload.configuredResponseByteLimit).toBe(config.LLM_MAX_RESPONSE_BYTES);
 	});
 
 	it('logs invalid_structured_response when an endpoint answer cannot be interpreted', async () => {

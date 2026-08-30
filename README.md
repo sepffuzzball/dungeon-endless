@@ -91,7 +91,7 @@ Endpoint records have one of four purposes:
 
 Enabled endpoints are tried in name order for their purpose. URLs and all resolved A/AAAA addresses are validated immediately before each request, redirects are not followed, reads and token counts are bounded, and failures fall through to the next endpoint. If all endpoints fail or none are configured, deterministic action heuristics, suggestions, prose, and summaries are used. Model output never controls dice, targets, rewards, health, inventory, or settlement. No model or network call occurs inside a database transaction.
 
-`LLM_MAX_RESPONSE_BYTES=8192` counts the complete SSE wire representation, including event framing and JSON overhead, not only visible model text. Verbose local token streams may need a value such as `262144`; keep a finite bound in every deployment.
+`LLM_MAX_RESPONSE_BYTES=8192` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text. Verbose local servers may need `262144` or larger; keep a finite bound in every deployment.
 
 ### LLM fallback diagnostics
 
@@ -168,6 +168,22 @@ docker compose up --build -d
 ```
 
 The app container waits for PostgreSQL, applies migrations, runs idempotent admin bootstrap, and starts `node build/index.js` on port 3000. Once the first administrator exists, unset `BOOTSTRAP_ADMIN_USERNAME` and `BOOTSTRAP_ADMIN_PASSWORD`; later starts will not require them. Put the app behind an HTTPS reverse proxy, preserve forwarded host/origin behavior, and keep secure cookies enabled. The named volume `db_data` is persistent but is not a backup.
+
+### Troubleshooting LLM environment limits
+
+Compose only forwards `.env` values into a service when that service's entry in `docker-compose.yml` explicitly references them. Earlier versions did not reference `LLM_MAX_TOKENS`, `LLM_MAX_RESPONSE_BYTES`, or `LLM_TIMEOUT_MS`, so the app silently used its built-in defaults (600 tokens, 8192 bytes, 20000 ms) even when `.env` set other values. The current Compose file forwards all three, but changing `.env` while a container is already running has no effect until the container is recreated:
+
+```sh
+docker compose up -d --force-recreate app
+```
+
+Verify the values actually reached the container:
+
+```sh
+docker compose exec app sh -lc 'env | grep ^LLM_'
+```
+
+`LLM_MAX_RESPONSE_BYTES` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text; verbose local servers may need `262144` or larger. Keep a finite bound in every deployment.
 
 ## GHCR publishing and package permissions
 

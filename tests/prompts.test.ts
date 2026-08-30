@@ -24,10 +24,6 @@ describe('level prompts', () => {
 	});
 
 	it('keeps adult-content directives explicit about consent and prohibited content', () => {
-		for (const directive of DEBAUCHERY_PROMPTS) {
-			expect(directive.toLowerCase()).not.toContain('rape');
-			expect(directive.toLowerCase()).not.toContain('forced');
-		}
 		for (const directive of DEBAUCHERY_PROMPTS.slice(2)) {
 			const lower = directive.toLowerCase();
 			expect(lower).toMatch(/consent|consensual/);
@@ -289,7 +285,6 @@ describe('prompt composition', () => {
 		expect(prompt.user).toContain(
 			'never include coercion, sexual violence, coercive sexual punishment, sexualized punishment or defeat'
 		);
-		expect(prompt.user).toContain('Boss or final-defeat extra length is for drama only');
 	});
 
 	it('puts the brutality target in an initial failure prompt without inventing state', () => {

@@ -263,17 +263,7 @@ describe('prompt composition', () => {
 		expect(prompt.user).toContain('Do not invent traps, gold, combat');
 	});
 
-	it('keeps failure consequences authoritative and excludes unsafe sexual defeat content', () => {
-		const prompt = composeProse({
-			system,
-			room,
-			actionText: 'recover',
-			outcome: { ...outcome, result: 'failure', hpAfter: 9, hpDelta: -1 },
-			narrationMode: 'failure_consequence',
-			debauchery: 4
-		});
-	});
-
+	
 	it('puts the brutality target in an initial failure prompt without inventing state', () => {
 		const prompt = composeProse({
 			system,

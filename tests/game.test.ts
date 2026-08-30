@@ -5,16 +5,22 @@ import {
 	MAX_COMPANY_GOLD,
 	TRAP_DC_BASE,
 	checkedCompanyGoldAdd,
+	applyLoot,
+	classifyEncounterOutcome,
 	deriveStatBreakdowns,
 	deriveStats,
 	canIncreaseStat,
 	gearUpgradeCost,
 	generateRewardPool,
 	generateRoom,
+	drawEncounterLoot,
+	ensureEncounterRewardPool,
 	isValidNewRunMeta,
 	levelUpgradeCost,
 	mapActionIntent,
 	normalizeActionIntent,
+	normalizeNarrationMode,
+	normalizeTurnOutcome,
 	resolveEncounter,
 	resolveRunBaseStats,
 	provisionPersistentGear,
@@ -27,7 +33,15 @@ import {
 	validImageUrl
 } from '../src/lib/server/game';
 import { createRng } from '../src/lib/server/rng';
-import type { DerivedStats, InventoryItem, RoomSnapshot, TurnIntent } from '../src/lib/types';
+import { runPhaseEnum } from '../src/lib/server/schema';
+import type {
+	DerivedStats,
+	InventoryItem,
+	RoomSnapshot,
+	RunPhase,
+	TurnIntent,
+	TurnNarrationMode
+} from '../src/lib/types';
 
 function baseStats(overrides?: Partial<DerivedStats>): DerivedStats {
 	return {
@@ -72,6 +86,27 @@ function resolve(
 		maxHp
 	});
 }
+
+describe('durable resolution types', () => {
+	it('exposes every persisted run phase and narration mode', () => {
+		expect(runPhaseEnum.enumValues).toEqual([
+			'ready',
+			'awaiting_loot',
+			'awaiting_failure',
+			'awaiting_proceed'
+		]);
+		const phases: RunPhase[] = [...runPhaseEnum.enumValues];
+		const modes: TurnNarrationMode[] = ['ordinary_action', 'loot_search', 'failure_consequence'];
+		expect(phases).toHaveLength(4);
+		expect(modes).toHaveLength(3);
+	});
+
+	it('normalizes missing legacy narration modes to ordinary action', () => {
+		expect(normalizeNarrationMode()).toBe('ordinary_action');
+		expect(normalizeNarrationMode('loot_search')).toBe('loot_search');
+		expect(normalizeNarrationMode('failure_consequence')).toBe('failure_consequence');
+	});
+});
 
 describe('skillPrimary', () => {
 	it('maps every skill to the correct primary stat', () => {
@@ -644,7 +679,7 @@ describe('resolveEncounter', () => {
 		expect(result.outcome.hpDelta).toBe(-1);
 	});
 
-	it('grants two rewards when a boss is defeated', () => {
+	it('defers boss rewards until post-encounter loot resolution', () => {
 		const rewards: InventoryItem[] = [
 			{ kind: 'magic', name: 'M1', stat: 'attack' },
 			{ kind: 'magic', name: 'M2', stat: 'defense' }
@@ -655,7 +690,7 @@ describe('resolveEncounter', () => {
 			baseStats({ attackBonus: 100 })
 		);
 		expect(result.outcome.result).toBe('reward');
-		expect(result.outcome.rewards).toHaveLength(2);
+		expect(result.outcome.rewards).toBeUndefined();
 	});
 
 	it('lets a skill approach slip past a monster', () => {
@@ -725,7 +760,8 @@ describe('resolveEncounter', () => {
 		);
 		expect(result.outcome.result).toBe('reward');
 		expect(result.outcome.hpAfter).toBe(6);
-		expect(result.outcome.rewards).toBeUndefined();
+		expect(result.outcome.rewards).toEqual(rewards);
+		expect(result.outcome.carriedRewards).toEqual([]);
 	});
 
 	it('rests and recovers 1 HP', () => {
@@ -833,5 +869,93 @@ describe('generateRewardPool', () => {
 		expect(kinds.filter((k) => k === 'magic')).toHaveLength(2);
 		expect(kinds.filter((k) => k === 'draught')).toHaveLength(2);
 		expect(kinds.filter((k) => k === 'valuable')).toHaveLength(2);
+	});
+});
+
+describe('post-encounter loot foundation', () => {
+	const magic: InventoryItem = { kind: 'magic', name: 'Blade', stat: 'attack' };
+	const draught: InventoryItem = { kind: 'draught', name: 'Draught' };
+	const valuable: InventoryItem = { kind: 'valuable', name: 'Idol' };
+
+	it('preserves an existing pool by reference and deterministically fills legacy encounter rooms', () => {
+		const existing = room({ type: 'monster', rewards: [valuable] });
+		expect(ensureEncounterRewardPool(existing, 'seed', 7)).toBe(existing);
+
+		const legacy = room({ type: 'trap' });
+		const first = ensureEncounterRewardPool(legacy, 'seed', 7);
+		const retry = ensureEncounterRewardPool(legacy, 'seed', 7);
+		expect(first).toEqual(retry);
+		expect(first.rewards).toHaveLength(3);
+		expect(legacy.rewards).toBeUndefined();
+	});
+
+	it('creates normal encounter pools during room generation', () => {
+		for (let number = 1; number < 40; number++) {
+			if (number % 5 === 0) continue;
+			const generated = generateRoom({
+				seed: 'all-pools',
+				room: number,
+				turn: 91,
+				monsters: [],
+				traps: []
+			});
+			if (generated.type === 'monster' || generated.type === 'trap') {
+				expect(generated.rewards).toHaveLength(3);
+			}
+		}
+	});
+
+	it('draws deterministically without mutating the pool or depending on encounter approach', () => {
+		const encounter = room({ type: 'monster', rewards: [magic, draught, valuable] });
+		const before = structuredClone(encounter);
+		const first = drawEncounterLoot(encounter, 'stable', 11);
+		const retry = drawEncounterLoot(encounter, 'stable', 11);
+		expect(first).toEqual(retry);
+		expect(first.drawn).toHaveLength(1);
+		expect(encounter).toEqual(before);
+		// No combat/skill or client action key enters the draw API or seed tuple.
+		expect(drawEncounterLoot(encounter, 'stable', 11)).toEqual(first);
+	});
+
+	it('draws two boss items and separates consumed draughts from carried rewards', () => {
+		const boss = room({ type: 'boss', rewards: [draught, draught, magic, valuable] });
+		const draw = drawEncounterLoot(boss, 'boss', 10);
+		expect(draw.drawn).toHaveLength(2);
+		expect(draw.carried.every((item) => item.kind !== 'draught')).toBe(true);
+		expect(draw.consumedDraughtCount).toBe(draw.consumedDraughts.length);
+	});
+
+	it('applies multiple draughts with capped healing and preserves carried gear effects', () => {
+		const applied = applyLoot([], 8, 10, { carried: [magic], consumedDraughtCount: 3 });
+		expect(applied).toEqual({ inventory: [magic], hpAfter: 10, hpDelta: 2 });
+		expect(
+			deriveStats({
+				body: 1,
+				mind: 0,
+				spirit: 0,
+				level: 1,
+				hp: applied.hpAfter,
+				maxHp: 10,
+				defense: 6,
+				attackBonus: 2,
+				inventory: applied.inventory
+			}).attackBonus
+		).toBe(3);
+		expect(applyLoot([], 10, 10, { carried: [], consumedDraughtCount: 1 }).hpDelta).toBe(0);
+	});
+
+	it('normalizes legacy carried rewards and classifies encounter outcomes', () => {
+		const legacy = normalizeTurnOutcome({
+			result: 'reward',
+			hpBefore: 5,
+			hpAfter: 5,
+			hpDelta: 0,
+			message: 'found',
+			rewards: [magic, draught, valuable]
+		});
+		expect(legacy.carriedRewards).toEqual([magic, valuable]);
+		expect(classifyEncounterOutcome(legacy)).toBe('success');
+		expect(classifyEncounterOutcome({ ...legacy, result: 'failure' })).toBe('failure');
+		expect(classifyEncounterOutcome({ ...legacy, result: 'defeat', hpAfter: 0 })).toBe('fatal');
 	});
 });

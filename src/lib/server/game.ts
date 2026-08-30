@@ -10,7 +10,8 @@ import {
 	type StatBreakdowns,
 	type TrapDefinition,
 	type TurnIntent,
-	type TurnOutcome
+	type TurnOutcome,
+	type TurnNarrationMode
 } from '$lib/types';
 import { createRng, rollCheck, type RollCheckResult, type Rng } from './rng';
 
@@ -573,6 +574,8 @@ export const BOSS_REWARDS_ON_SUCCESS = 2;
 export const HP_LOSS_ON_FAILURE = 1;
 export const REST_HEAL = 1;
 export const DRAUGHT_HEAL = 1;
+const ENCOUNTER_REWARD_POOL_PURPOSE = 'encounter-reward-pool';
+const LOOT_SEARCH_PURPOSE = 'loot-search';
 
 export interface GenerateRoomInput {
 	seed: string;
@@ -581,6 +584,105 @@ export interface GenerateRoomInput {
 	debauchery?: number;
 	monsters: readonly MonsterDefinition[];
 	traps: readonly TrapDefinition[];
+}
+
+/** Missing persisted narration modes are ordinary actions. */
+export function normalizeNarrationMode(mode?: TurnNarrationMode): TurnNarrationMode {
+	return mode ?? 'ordinary_action';
+}
+
+/**
+ * Materializes the authoritative reward pool for encounter rooms. Existing
+ * non-empty pools are returned by reference so snapshots are never rerolled.
+ */
+export function ensureEncounterRewardPool(
+	room: RoomSnapshot,
+	seed: string,
+	roomNumber: number
+): RoomSnapshot {
+	if (!['monster', 'trap', 'boss'].includes(room.type) || (room.rewards?.length ?? 0) > 0) {
+		return room;
+	}
+	const size = room.type === 'boss' ? BOSS_REWARD_POOL_SIZE : TREASURE_REWARD_POOL_SIZE;
+	const rng = createRng(seed, roomNumber, 0, `${ENCOUNTER_REWARD_POOL_PURPOSE}:${room.type}`);
+	return { ...room, rewards: generateRewardPool(rng, size) };
+}
+
+export interface EncounterLootDraw {
+	/** All discovered items, including immediately consumed draughts. */
+	rewards: InventoryItem[];
+	/** Only items that should be appended to inventory. */
+	carriedRewards: InventoryItem[];
+	/** Compatibility aliases for callers that use draw-oriented terminology. */
+	drawn: InventoryItem[];
+	carried: InventoryItem[];
+	consumedDraughts: InventoryItem[];
+	consumedDraughtCount: number;
+}
+
+/** Draws stable post-encounter loot without changing the persisted reward pool. */
+export function drawEncounterLoot(
+	room: RoomSnapshot,
+	seed: string,
+	roomNumber: number
+): EncounterLootDraw {
+	const count = room.type === 'boss' ? BOSS_REWARDS_ON_SUCCESS : 1;
+	const available = [...(room.rewards ?? [])];
+	const rng = createRng(seed, roomNumber, 0, LOOT_SEARCH_PURPOSE);
+	const drawn: InventoryItem[] = [];
+	for (let i = 0; i < count && available.length > 0; i++) {
+		drawn.push(available.splice(rng.range(0, available.length - 1), 1)[0]);
+	}
+	const carried = drawn.filter((item) => item.kind !== 'draught');
+	const consumedDraughts = drawn.filter((item) => item.kind === 'draught');
+	return {
+		rewards: drawn,
+		carriedRewards: carried,
+		drawn,
+		carried,
+		consumedDraughts,
+		consumedDraughtCount: consumedDraughts.length
+	};
+}
+
+export interface AppliedLoot {
+	inventory: InventoryItem[];
+	hpAfter: number;
+	hpDelta: number;
+}
+
+/** Applies an authoritative draw: gear is carried and each draught heals one HP. */
+export function applyLoot(
+	inventory: readonly InventoryItem[],
+	hp: number,
+	maxHp: number,
+	loot: {
+		carriedRewards?: readonly InventoryItem[];
+		carried?: readonly InventoryItem[];
+		consumedDraughtCount: number;
+	}
+): AppliedLoot {
+	const hpAfter = Math.min(maxHp, hp + loot.consumedDraughtCount * DRAUGHT_HEAL);
+	const carried = loot.carriedRewards ?? loot.carried ?? [];
+	return { inventory: [...inventory, ...carried], hpAfter, hpDelta: hpAfter - hp };
+}
+
+/** Normalizes old outcomes whose rewards represented both carried and consumed items. */
+export function normalizeTurnOutcome(outcome: TurnOutcome): TurnOutcome {
+	if (outcome.carriedRewards) return outcome;
+	return {
+		...outcome,
+		carriedRewards: (outcome.rewards ?? []).filter((item) => item.kind !== 'draught')
+	};
+}
+
+export type EncounterOutcomeClass = 'success' | 'failure' | 'fatal';
+
+/** Classifies an authoritative encounter result for the next durable phase. */
+export function classifyEncounterOutcome(outcome: TurnOutcome): EncounterOutcomeClass {
+	if (outcome.result === 'defeat' || outcome.hpAfter <= 0) return 'fatal';
+	if (outcome.result === 'failure') return 'failure';
+	return 'success';
 }
 
 const KIND_WEIGHTS = [
@@ -606,14 +708,17 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 			monster,
 			`A chamber holds a monstrous guardian: ${monster.name}. ${monster.temperament}.`
 		);
-		return {
-			type: 'boss',
-			boss: true,
-			name: monster.name,
-			description,
-			defense: monster.defense + BOSS_TARGET_BONUS,
-			rewards: generateRewardPool(rng, BOSS_REWARD_POOL_SIZE)
-		};
+		return ensureEncounterRewardPool(
+			{
+				type: 'boss',
+				boss: true,
+				name: monster.name,
+				description,
+				defense: monster.defense + BOSS_TARGET_BONUS
+			},
+			input.seed,
+			input.room
+		);
 	}
 
 	const kind = rng.weighted(KIND_WEIGHTS).kind;
@@ -625,22 +730,30 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 				monster,
 				`${monster.name} lurks here. ${monster.temperament}.`
 			);
-			return {
-				type: 'monster',
-				name: monster.name,
-				description,
-				defense: monster.defense
-			};
+			return ensureEncounterRewardPool(
+				{
+					type: 'monster',
+					name: monster.name,
+					description,
+					defense: monster.defense
+				},
+				input.seed,
+				input.room
+			);
 		}
 		case 'trap': {
 			const trap = selectTrap(rng, input.traps);
-			return {
-				type: 'trap',
-				name: trap.name,
-				description: trap.description?.trim() || `${trap.name}. ${trap.consequence}.`,
-				dc: TRAP_DC_BASE + Math.floor(input.room / 5),
-				skill: trap.skill
-			};
+			return ensureEncounterRewardPool(
+				{
+					type: 'trap',
+					name: trap.name,
+					description: trap.description?.trim() || `${trap.name}. ${trap.consequence}.`,
+					dc: TRAP_DC_BASE + Math.floor(input.room / 5),
+					skill: trap.skill
+				},
+				input.seed,
+				input.room
+			);
 		}
 		case 'treasure':
 			return {
@@ -811,32 +924,34 @@ export interface EncounterResult {
 	rolls: RollCheckResult[];
 }
 
-/** Draws up to `count` rewards from the pool; draughts are consumed immediately for healing. */
-function drawRewards(
+/** Treasure compatibility draw; encounter loot uses drawEncounterLoot after resolution. */
+function drawImmediateRewards(
 	pool: InventoryItem[],
 	count: number,
 	rng: Rng,
 	hpAfter: number,
 	maxHp: number
 ) {
-	const gained: InventoryItem[] = [];
+	const drawn: InventoryItem[] = [];
+	const carried: InventoryItem[] = [];
 	for (let i = 0; i < count && pool.length > 0; i++) {
 		const index = rng.range(0, pool.length - 1);
 		const item = pool.splice(index, 1)[0];
+		drawn.push(item);
 		if (item.kind === 'draught') {
 			hpAfter = Math.min(maxHp, hpAfter + DRAUGHT_HEAL);
 		} else {
-			gained.push(item);
+			carried.push(item);
 		}
 	}
-	return { gained, hpAfter };
+	return { drawn, carried, hpAfter };
 }
 
 /**
  * Resolves one encounter into an immutable outcome. Combat checks the attack
  * bonus against the room's defense, traps check the named skill against the
- * DC; a failed check costs 1 HP. Rest rooms always heal. Boss rooms grant
- * two rewards on success.
+ * DC; a failed check costs 1 HP. Rest rooms always heal. Encounter success
+ * does not draw rewards; post-encounter loot is resolved separately.
  */
 export function resolveEncounter(input: EncounterInput): EncounterResult {
 	const { room, intent, stats, hp, maxHp } = input;
@@ -848,6 +963,7 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 	let result: TurnOutcome['result'] = 'success';
 	let message = '';
 	let rewards: InventoryItem[] = [];
+	let carriedRewards: InventoryItem[] = [];
 	let gold: number | undefined;
 	let injury: string | undefined;
 
@@ -884,22 +1000,9 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 				);
 				rolls.push(check);
 				if (check.success) {
-					if (room.type === 'boss') {
-						const drawn = drawRewards(
-							room.rewards ?? [],
-							BOSS_REWARDS_ON_SUCCESS,
-							rng,
-							hpAfter,
-							maxHp
-						);
-						rewards = drawn.gained;
-						hpAfter = drawn.hpAfter;
-						result = 'reward';
-						message = `You slay the boss ${room.name}. Your spoils are gathered.`;
-					} else {
-						result = 'reward';
-						message = `You defeat ${room.name}.`;
-					}
+					result = 'reward';
+					message =
+						room.type === 'boss' ? `You slay the boss ${room.name}.` : `You defeat ${room.name}.`;
 				} else {
 					hpAfter = Math.max(0, hpAfter - HP_LOSS_ON_FAILURE);
 					result = 'failure';
@@ -938,8 +1041,9 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 				message = 'The chamber is empty.';
 				break;
 			}
-			const drawn = drawRewards(pool, 1, rng, hpAfter, maxHp);
-			rewards = drawn.gained;
+			const drawn = drawImmediateRewards(pool, 1, rng, hpAfter, maxHp);
+			rewards = drawn.drawn;
+			carriedRewards = drawn.carried;
 			hpAfter = drawn.hpAfter;
 			result = 'reward';
 			message = `You claim the ${room.name ?? 'hidden hoard'}.`;
@@ -965,6 +1069,7 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 		hpDelta: hpAfter - hpBefore,
 		message,
 		...(rewards.length > 0 ? { rewards } : {}),
+		...(rewards.length > 0 ? { carriedRewards } : {}),
 		...(injury ? { injury } : {}),
 		...(gold !== undefined ? { gold } : {})
 	};

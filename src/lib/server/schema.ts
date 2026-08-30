@@ -26,7 +26,12 @@ import {
 
 export const roleEnum = pgEnum('user_role', ['user', 'editor', 'admin']);
 export const runStatusEnum = pgEnum('run_status', ['active', 'defeated', 'abandoned']);
-export const runPhaseEnum = pgEnum('run_phase', ['ready', 'awaiting_proceed']);
+export const runPhaseEnum = pgEnum('run_phase', [
+	'ready',
+	'awaiting_loot',
+	'awaiting_failure',
+	'awaiting_proceed'
+]);
 export const roomTypeEnum = pgEnum('room_type', ['monster', 'trap', 'treasure', 'rest', 'boss']);
 export const llmPurposeEnum = pgEnum('llm_purpose', [
 	'prose',
@@ -278,6 +283,7 @@ export const turns = pgTable(
 	},
 	(table) => [
 		index('turns_run_id_idx').on(table.runId),
+		uniqueIndex('turns_run_id_action_key_unique').on(table.runId, table.actionKey),
 		uniqueIndex('turns_run_sequence_action_key_unique').on(
 			table.runId,
 			table.sequence,

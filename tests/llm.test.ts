@@ -120,6 +120,38 @@ describe('deterministic prose fallbacks', () => {
 		expect(text).toContain('The recorded injury is a punctured heel');
 	});
 
+	it('uses exact, safe mode-specific loot and failure fallbacks', () => {
+		const loot = fallbackProse(
+			{ type: 'monster', name: 'Watcher' },
+			'search',
+			{
+				...proseInput.outcome,
+				rewards: [{ kind: 'draught', name: 'Draught of Rest' }],
+				carriedRewards: []
+			},
+			[],
+			'loot_search'
+		);
+		expect(loot).toContain('exactly Draught of Rest');
+		expect(loot).toContain('consumed as recorded');
+
+		const failure = fallbackProse(
+			{ type: 'trap', name: 'Needle Floor' },
+			'anything',
+			{
+				result: 'failure',
+				hpBefore: 5,
+				hpAfter: 4,
+				hpDelta: -1,
+				message: 'The mechanism catches you.'
+			},
+			[],
+			'failure_consequence'
+		);
+		expect(failure).toContain('No injury is recorded');
+		expect(failure).not.toMatch(/sexual|dismember|death/i);
+	});
+
 	it('states when no roll is required and covers every room fallback', () => {
 		for (const type of ['monster', 'boss', 'trap', 'treasure', 'rest'] as const) {
 			const text = fallbackProse(

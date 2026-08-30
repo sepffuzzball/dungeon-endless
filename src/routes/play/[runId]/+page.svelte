@@ -39,6 +39,7 @@
 			!awaitingTurn ||
 			(hydrated && (turnPending || Object.keys(activeStreams).length > 0))
 	);
+	let followupDisabled = $derived(proceedDisabled);
 	let dmActive = $derived(submitting || Object.keys(activeStreams).length > 0);
 	let roomProse = $derived(
 		data.room.entryId && liveText[data.room.entryId] !== undefined
@@ -223,7 +224,7 @@
 		</div>
 	{/if}
 </div>
-{#if data.status !== 'active'}
+{#if data.status !== 'active' && data.phase !== 'awaiting_failure'}
 	<div class="alert alert-info play-alert" role="status">
 		This expedition is {data.status}. Its chronicle remains available, but no further actions can be
 		taken.
@@ -315,9 +316,9 @@
 	<main class="stack play-main">
 		<article class="card room-card">
 			<div class="card-head">
-				<span class="badge red">{data.room.kind}</span><span class="eyebrow"
-					>Room {data.room.number}</span
-				>
+				{#if data.room.revealed && data.room.kind}<span class="badge red">{data.room.kind}</span
+					>{/if}
+				<span class="eyebrow">Room {data.room.number}</span>
 			</div>
 			<h2>{data.room.title}</h2>
 			<div
@@ -363,12 +364,26 @@
 					<button type="submit" disabled={actionsDisabled}>Attempt</button>
 				</form>
 			</section>
-		{:else if data.status === 'active' && data.phase === 'awaiting_proceed'}
+		{:else if ['active', 'defeated'].includes(data.status) && ['awaiting_loot', 'awaiting_failure', 'awaiting_proceed'].includes(data.phase)}
 			<section class="card resolution-card" aria-labelledby="resolution-title">
 				<div class="resolution-head">
 					<div>
-						<div class="eyebrow">Encounter resolved</div>
-						<h2 id="resolution-title">The room falls behind you</h2>
+						<div class="eyebrow">
+							{data.phase === 'awaiting_loot'
+								? 'Victory secured'
+								: data.phase === 'awaiting_failure'
+									? 'Consequence awaits'
+									: 'Encounter resolved'}
+						</div>
+						<h2 id="resolution-title">
+							{data.phase === 'awaiting_loot'
+								? 'Search what remains'
+								: data.phase === 'awaiting_failure'
+									? 'Face the aftermath'
+									: data.status === 'defeated'
+										? 'The final account'
+										: 'The way deeper opens'}
+						</h2>
 					</div>
 					{#if awaitingTurn}
 						<span
@@ -406,6 +421,23 @@
 							</strong>
 						</div>
 					</div>
+					{#if awaitingTurn.outcome.rewards?.length}
+						<div class="loot-result" aria-label="Discovered loot">
+							<div class="eyebrow">Discovered</div>
+							<ul>
+								{#each awaitingTurn.outcome.rewards as item}
+									<li>
+										<strong>{item.name}</strong>
+										<span>
+											{item.kind === 'draught'
+												? 'Consumed immediately for healing'
+												: 'Added to inventory'}
+										</span>
+									</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
 					{#if awaitingTurn.rolls.length > 0}
 						<div class="resolution-rolls" aria-label="Encounter rolls">
 							{#each awaitingTurn.rolls as roll}
@@ -420,11 +452,42 @@
 							{/each}
 						</div>
 					{/if}
-					<form method="POST" action="?/proceed" class="proceed-form" use:enhance={enhanceProceed}>
-						<input type="hidden" name="expectedVersion" value={data.expectedVersion} />
-						<input type="hidden" name="commandKey" value={data.proceedKey} />
-						<button type="submit" disabled={proceedDisabled}>Proceed Deeper</button>
-					</form>
+					{#if data.phase === 'awaiting_loot'}
+						<form
+							method="POST"
+							action="?/searchLoot"
+							class="proceed-form"
+							use:enhance={enhanceAction}
+						>
+							<input type="hidden" name="actionText" value="Searching the room for loot..." />
+							<input type="hidden" name="expectedVersion" value={data.expectedVersion} />
+							<input type="hidden" name="actionKey" value={data.followupKey} />
+							<button type="submit" disabled={followupDisabled}>Search for Loot</button>
+						</form>
+					{:else if data.phase === 'awaiting_failure'}
+						<form
+							method="POST"
+							action="?/resolveFailure"
+							class="proceed-form"
+							use:enhance={enhanceAction}
+						>
+							<input type="hidden" name="actionText" value="Facing the aftermath..." />
+							<input type="hidden" name="expectedVersion" value={data.expectedVersion} />
+							<input type="hidden" name="actionKey" value={data.followupKey} />
+							<button type="submit" disabled={followupDisabled}>Resolve Failure</button>
+						</form>
+					{:else if data.status === 'active'}
+						<form
+							method="POST"
+							action="?/proceed"
+							class="proceed-form"
+							use:enhance={enhanceProceed}
+						>
+							<input type="hidden" name="expectedVersion" value={data.expectedVersion} />
+							<input type="hidden" name="commandKey" value={data.proceedKey} />
+							<button type="submit" disabled={proceedDisabled}>Proceed Deeper</button>
+						</form>
+					{/if}
 				{:else}
 					<div class="alert alert-error" role="alert">
 						The resolved turn is unavailable. Reload before proceeding.
@@ -460,7 +523,10 @@
 							minute: '2-digit'
 						})}</span
 					>
-					{#if event.kind === 'room'}<strong>ROOM {event.roomNumber} / {event.roomKind}</strong
+					{#if event.kind === 'room'}<strong
+							>ROOM {event.roomNumber}{event.revealed && event.roomKind
+								? ` / ${event.roomKind}`
+								: ''}</strong
 						>{:else}<strong>TURN {event.turn} / ACTION</strong>{/if}
 					<span class="stream-state">{activeStreams[event.id] ? 'streaming' : event.status}</span>
 				</div>

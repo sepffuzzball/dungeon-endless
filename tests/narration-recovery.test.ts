@@ -13,7 +13,11 @@ import { config } from '../src/lib/server/config';
 import { LlmFailure, LLM_ROUTE_ERROR_LOG_PREFIX } from '../src/lib/server/llm-diagnostics';
 import {
 	_afterCommit as afterCommit,
-	_pendingNarrationTargets as pendingNarrationTargets
+	_currentRoomRevealed as currentRoomRevealed,
+	_pendingNarrationTargets as pendingNarrationTargets,
+	_phaseAfterEncounter as phaseAfterEncounter,
+	_validActDuplicate as validActDuplicate,
+	_validFollowupDuplicate as validFollowupDuplicate
 } from '../src/routes/play/[runId]/+page.server';
 import {
 	_outerRouteDiagnostic as outerRouteDiagnostic,
@@ -113,6 +117,84 @@ describe('pendingNarrationTargets', () => {
 		expect(
 			pendingNarrationTargets([turn('t1', 1, 'failed'), turn('t2', 2, 'complete')], null, 'ready')
 		).toEqual([]);
+	});
+});
+
+describe('post-encounter route predicates', () => {
+	const roomSnapshot = { type: 'monster' as const, roomNumber: 7, name: 'Hidden Horror' };
+	const success = {
+		result: 'reward' as const,
+		hpBefore: 3,
+		hpAfter: 3,
+		hpDelta: 0,
+		message: 'won'
+	};
+
+	it('conceals until an exact current room and version turn exists', () => {
+		expect(currentRoomRevealed({ version: 4, roomNumber: 7 }, null)).toBe(false);
+		expect(currentRoomRevealed({ version: 4, roomNumber: 7 }, { sequence: 3, roomSnapshot })).toBe(
+			false
+		);
+		expect(currentRoomRevealed({ version: 4, roomNumber: 8 }, { sequence: 4, roomSnapshot })).toBe(
+			false
+		);
+		expect(currentRoomRevealed({ version: 4, roomNumber: 7 }, { sequence: 4, roomSnapshot })).toBe(
+			true
+		);
+	});
+
+	it('selects loot, failure, fatal and immediate phases', () => {
+		expect(phaseAfterEncounter('monster', success)).toBe('awaiting_loot');
+		expect(phaseAfterEncounter('trap', { ...success, result: 'failure', hpAfter: 1 })).toBe(
+			'awaiting_failure'
+		);
+		expect(phaseAfterEncounter('boss', { ...success, result: 'defeat', hpAfter: 0 })).toBe(
+			'awaiting_failure'
+		);
+		expect(phaseAfterEncounter('treasure', success)).toBe('awaiting_proceed');
+	});
+
+	it('accepts duplicate follow-ups only for the exact next sequence and mode', () => {
+		expect(
+			validFollowupDuplicate(
+				{ sequence: 6, intent: { narrationMode: 'loot_search' } },
+				5,
+				'loot_search'
+			)
+		).toBe(true);
+		expect(
+			validFollowupDuplicate(
+				{ sequence: 7, intent: { narrationMode: 'loot_search' } },
+				5,
+				'loot_search'
+			)
+		).toBe(false);
+		expect(
+			validFollowupDuplicate(
+				{ sequence: 6, intent: { narrationMode: 'failure_consequence' } },
+				5,
+				'loot_search'
+			)
+		).toBe(false);
+		expect(validFollowupDuplicate({ sequence: 6, intent: {} }, 5, 'failure_consequence')).toBe(
+			false
+		);
+	});
+
+	it('accepts duplicate acts only for the exact next sequence and ordinary action mode', () => {
+		expect(validActDuplicate({ sequence: 6, intent: { narrationMode: 'ordinary_action' } }, 5)).toBe(
+			true
+		);
+		expect(validActDuplicate({ sequence: 6, intent: {} }, 5)).toBe(true);
+		expect(validActDuplicate({ sequence: 7, intent: { narrationMode: 'ordinary_action' } }, 5)).toBe(
+			false
+		);
+		expect(validActDuplicate({ sequence: 6, intent: { narrationMode: 'loot_search' } }, 5)).toBe(
+			false
+		);
+		expect(
+			validActDuplicate({ sequence: 6, intent: { narrationMode: 'failure_consequence' } }, 5)
+		).toBe(false);
 	});
 });
 

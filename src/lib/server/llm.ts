@@ -6,6 +6,7 @@ import {
 	type RollRecord,
 	type RoomSnapshot,
 	type SuggestedAction,
+	type TurnNarrationMode,
 	type TurnOutcome
 } from '$lib/types';
 import { config } from './config';
@@ -29,7 +30,12 @@ import {
 	delimit
 } from './prompts';
 import type { RoomEntryCharacterProfile } from './prompts';
-import { mapActionIntent, normalizeActionIntent, type MappedIntent } from './game';
+import {
+	mapActionIntent,
+	normalizeActionIntent,
+	normalizeNarrationMode,
+	type MappedIntent
+} from './game';
 
 /*
  * Bounded, OpenAI-compatible LLM access. Endpoints are tried in name order
@@ -641,11 +647,40 @@ export function fallbackProse(
 	room: RoomSnapshot,
 	actionText: string,
 	outcome: TurnOutcome,
-	rolls: RollRecord[] = []
+	rolls: RollRecord[] = [],
+	narrationMode?: TurnNarrationMode
 ): string {
 	const inline = (value: string, maxChars: number) =>
 		value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
 	const noun = (room.name ? inline(room.name, 200) : '') || `the ${room.type}`;
+	const mode = normalizeNarrationMode(narrationMode);
+	if (mode === 'loot_search') {
+		const items = outcome.rewards ?? [];
+		const names = items.map((item) => inline(item.name, 200));
+		const found =
+			names.length === 0
+				? 'The search turns up no items.'
+				: `The search reveals exactly ${names.join(', ')}.`;
+		const consumed = items.filter((item) => item.kind === 'draught').length;
+		return `You search the resolved ${noun}, leaving the settled encounter behind.\n\n${found}${
+			consumed > 0
+				? ` ${consumed} healing draught${consumed === 1 ? ' is' : 's are'} consumed as recorded.`
+				: ''
+		}`;
+	}
+	if (mode === 'failure_consequence') {
+		const hp =
+			outcome.hpDelta < 0
+				? `You lose ${Math.abs(outcome.hpDelta)} HP, falling from ${outcome.hpBefore} to ${outcome.hpAfter}.`
+				: `Your HP remains ${outcome.hpAfter}.`;
+		const injury = outcome.injury
+			? `The only recorded injury is ${inline(outcome.injury, 500)}.`
+			: 'No injury is recorded.';
+		return `The failed attempt leaves you facing the settled consequence in ${noun}.\n\n${inline(
+			outcome.message,
+			2000
+		)} ${hp} ${injury}`.trim();
+	}
 	const action = actionText
 		.replace(/\s+/g, ' ')
 		.trim()
@@ -735,9 +770,10 @@ export async function* fallbackProseStream(
 	room: RoomSnapshot,
 	actionText: string,
 	outcome: TurnOutcome,
-	rolls: RollRecord[] = []
+	rolls: RollRecord[] = [],
+	narrationMode?: TurnNarrationMode
 ): AsyncGenerator<StreamChunk> {
-	const text = fallbackProse(room, actionText, outcome, rolls);
+	const text = fallbackProse(room, actionText, outcome, rolls, narrationMode);
 	yield* chunkFallback(text);
 }
 
@@ -774,11 +810,18 @@ function normalizeSummaryAction(raw: string): string {
 export function fallbackSummary(
 	room: RoomSnapshot,
 	actionText: string,
-	outcome: TurnOutcome
+	outcome: TurnOutcome,
+	narrationMode?: TurnNarrationMode
 ): string {
 	const inline = (value: string, maxChars: number) =>
 		value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
-	const what = normalizeSummaryAction(actionText) || `You dealt with the ${room.type}.`;
+	const mode = normalizeNarrationMode(narrationMode);
+	const what =
+		mode === 'loot_search'
+			? 'You searched the resolved room for loot.'
+			: mode === 'failure_consequence'
+				? 'You faced the settled aftermath of the failed encounter.'
+				: normalizeSummaryAction(actionText) || `You dealt with the ${room.type}.`;
 	const hp =
 		outcome.hpDelta < 0
 			? `You lost ${Math.abs(outcome.hpDelta)} HP.`
@@ -858,6 +901,8 @@ export interface ProseInput {
 	outcome: TurnOutcome;
 	/** Authoritative roll records; legacy or missing turns pass an empty list. */
 	rolls?: RollRecord[];
+	/** Missing on legacy turns and normalized to ordinary_action. */
+	narrationMode?: TurnNarrationMode;
 	endpoints: readonly EndpointSource[];
 	signal?: AbortSignal;
 	/** Optional call-site context copied into fallback diagnostics. */
@@ -876,8 +921,8 @@ function notifyFallbackDiagnostic(callback: (() => void) | undefined): void {
 
 /** Fetches prose narration for a resolved turn, or deterministic prose. */
 export async function narrateProse(input: ProseInput): Promise<string> {
-	const { system, room, actionText, outcome, rolls } = input;
-	const prompt = composeProse({ system, room, actionText, outcome, rolls });
+	const { system, room, actionText, outcome, rolls, narrationMode } = input;
+	const prompt = composeProse({ system, room, actionText, outcome, rolls, narrationMode });
 	return runPurpose(
 		'prose',
 		input.endpoints,
@@ -885,7 +930,7 @@ export async function narrateProse(input: ProseInput): Promise<string> {
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		fallbackProse(room, actionText, outcome, rolls),
+		fallbackProse(room, actionText, outcome, rolls, narrationMode),
 		{},
 		input.diagnostics
 	);
@@ -899,11 +944,11 @@ export async function narrateProse(input: ProseInput): Promise<string> {
  * fallback prose.
  */
 export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChunk> {
-	const { system, room, actionText, outcome, rolls } = input;
+	const { system, room, actionText, outcome, rolls, narrationMode } = input;
 	const diagnostics = input.diagnostics;
 	const endpoint = pickEndpoint(input.endpoints, 'prose');
 	if (!endpoint) {
-		const fallback = fallbackProse(room, actionText, outcome, rolls);
+		const fallback = fallbackProse(room, actionText, outcome, rolls, narrationMode);
 		logLlmFallback({
 			purpose: 'prose',
 			mode: 'stream',
@@ -918,7 +963,7 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 		yield* chunkFallback(fallback);
 		return;
 	}
-	const prompt = composeProse({ system, room, actionText, outcome, rolls });
+	const prompt = composeProse({ system, room, actionText, outcome, rolls, narrationMode });
 	const configuredTimeoutMs = endpoint.timeoutMs ?? config.LLM_TIMEOUT_MS;
 	let visibleChars = 0;
 	let stats: LlmStreamStats = { bytes: 0, sseEvents: 0, parseFailures: 0, contentDeltas: 0 };
@@ -945,7 +990,7 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 	} catch (error) {
 		const failure = toLlmFailure(error);
 		if (failure.reason === 'client_disconnect' || failure.reason === 'lease_lost') throw failure;
-		const fallback = fallbackProse(room, actionText, outcome, rolls);
+		const fallback = fallbackProse(room, actionText, outcome, rolls, narrationMode);
 		logLlmFallback({
 			purpose: 'prose',
 			mode: 'stream',
@@ -969,7 +1014,7 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 		return;
 	}
 	if (visibleChars === 0) {
-		const fallback = fallbackProse(room, actionText, outcome, rolls);
+		const fallback = fallbackProse(room, actionText, outcome, rolls, narrationMode);
 		logLlmFallback({
 			purpose: 'prose',
 			mode: 'stream',
@@ -1154,6 +1199,8 @@ export interface SummaryInput {
 	room: RoomSnapshot;
 	actionText: string;
 	outcome: TurnOutcome;
+	/** Missing on legacy turns and normalized to ordinary_action. */
+	narrationMode?: TurnNarrationMode;
 	endpoints: readonly EndpointSource[];
 	/** Optional call-site context copied into fallback diagnostics. */
 	diagnostics?: LlmDiagnosticContext;
@@ -1161,8 +1208,8 @@ export interface SummaryInput {
 
 /** Fetches a short turn summary, or deterministic summary. */
 export async function summarizeTurn(input: SummaryInput): Promise<string> {
-	const { system, room, actionText, outcome } = input;
-	const prompt = composeSummary({ system, room, actionText, outcome });
+	const { system, room, actionText, outcome, narrationMode } = input;
+	const prompt = composeSummary({ system, room, actionText, outcome, narrationMode });
 	return runPurpose(
 		'summary',
 		input.endpoints,
@@ -1170,7 +1217,7 @@ export async function summarizeTurn(input: SummaryInput): Promise<string> {
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		fallbackSummary(room, actionText, outcome),
+		fallbackSummary(room, actionText, outcome, narrationMode),
 		{},
 		input.diagnostics
 	);

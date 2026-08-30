@@ -36,6 +36,13 @@
 			"when": 1788037556527,
 			"tag": "0004_mysterious_franklin_richards",
 			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1788093469075,
+			"tag": "0005_loot_failure_foundation",
+			"breakpoints": true
 		}
 	]
 }

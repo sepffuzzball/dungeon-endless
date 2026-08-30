@@ -7,11 +7,12 @@ export type SkillName =
 	'Athletics' | 'Knowledge' | 'Magic' | 'Persuasion' | 'Stealth' | 'Willpower';
 export type RunStatus = 'active' | 'defeated' | 'abandoned';
 /** Progress gate for a run: whether the player may act or must confirm proceed first. */
-export type RunPhase = 'ready' | 'awaiting_proceed';
+export type RunPhase = 'ready' | 'awaiting_loot' | 'awaiting_failure' | 'awaiting_proceed';
 export type LlmPurpose = 'prose' | 'interpretation' | 'summary' | 'suggestions';
 export type RoomType = 'monster' | 'trap' | 'treasure' | 'rest' | 'boss';
 export type ActionMethod = 'combat' | 'skill' | 'none';
 export type NarrationStatus = 'pending' | 'streaming' | 'complete' | 'failed';
+export type TurnNarrationMode = 'ordinary_action' | 'loot_search' | 'failure_consequence';
 
 /** Editor-managed body build choices offered during character creation. */
 export const BUILD_OPTIONS = [
@@ -197,6 +198,8 @@ export interface TurnIntent {
 	skill?: SkillName;
 	advantage: number;
 	customText?: string;
+	/** Missing on legacy turns and normalized to ordinary_action by narration helpers. */
+	narrationMode?: TurnNarrationMode;
 }
 
 export interface TurnOutcome {
@@ -205,7 +208,10 @@ export interface TurnOutcome {
 	hpAfter: number;
 	hpDelta: number;
 	message: string;
+	/** Every discovered item, including draughts consumed immediately. */
 	rewards?: InventoryItem[];
+	/** Only rewards placed in inventory; absent on legacy outcomes. */
+	carriedRewards?: InventoryItem[];
 	injury?: string;
 	gold?: number;
 }
@@ -290,7 +296,9 @@ export interface RunSummary {
 export interface RoomView {
 	number: number;
 	title: string;
-	kind: RoomType;
+	/** False while later route wiring intentionally conceals the room identity. */
+	revealed?: boolean;
+	kind: RoomType | null;
 	prose: string;
 	exits: string[];
 	entryId: string | null;
@@ -303,7 +311,8 @@ export interface TerminalRoomEvent {
 	timestamp: string;
 	roomNumber: number;
 	title: string;
-	roomKind: RoomType;
+	revealed?: boolean;
+	roomKind: RoomType | null;
 	prose: string;
 	status: NarrationStatus;
 }
@@ -426,6 +435,7 @@ export interface PlayView {
 	actionKey: string;
 	actionKeys: string[];
 	proceedKey: string;
+	followupKey: string;
 	awaitingTurn: AwaitingProceedTurn | null;
 	inventory: InventoryItem[];
 	summary: string;

@@ -1,19 +1,33 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, or, sql } from 'drizzle-orm';
 import { error, fail, redirect } from '@sveltejs/kit';
+import type { RequestEvent } from '@sveltejs/kit';
 import { z } from 'zod';
-import type { NarrationStatus, PendingNarration, PlayView, RunPhase } from '$lib/types';
+import type {
+	NarrationStatus,
+	PendingNarration,
+	PlayView,
+	RoomSnapshot,
+	RunPhase,
+	TurnNarrationMode
+} from '$lib/types';
 import { achievementByKey, eligibleKeys } from '$lib/server/achievements';
 import { requireUser } from '$lib/server/authorization';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import {
 	checkedCompanyGoldAdd,
+	applyLoot,
+	classifyEncounterOutcome,
 	deriveStatBreakdowns,
 	deriveStats,
+	drawEncounterLoot,
+	ensureEncounterRewardPool,
 	generateRoom,
 	mapActionIntent,
 	normalizeActionIntent,
+	normalizeNarrationMode,
+	normalizeTurnOutcome,
 	resolveEncounter,
 	resolveRunBaseStats,
 	settlementGold,
@@ -124,12 +138,14 @@ async function finalizeTurnFallback(
 	turn: typeof turns.$inferSelect,
 	correlationId: string
 ) {
-	const summary = fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome);
+	const narrationMode = normalizeNarrationMode(turn.intent.narrationMode);
+	const summary = fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome, narrationMode);
 	const narration = fallbackProse(
 		turn.roomSnapshot,
 		turn.actionText,
 		turn.outcome,
-		Array.isArray(turn.rolls) ? turn.rolls : []
+		Array.isArray(turn.rolls) ? turn.rolls : [],
+		narrationMode
 	);
 	const finalized = await tx
 		.update(turns)
@@ -256,6 +272,47 @@ export function _pendingNarrationTargets(
 	return targets;
 }
 
+/** A room identity is public only after a turn for the exact current state exists. */
+export function _currentRoomRevealed(
+	run: { version: number; roomNumber: number },
+	turn: { sequence: number; roomSnapshot: RoomSnapshot } | null
+): boolean {
+	return Boolean(
+		turn && turn.sequence === run.version && turn.roomSnapshot.roomNumber === run.roomNumber
+	);
+}
+
+/** Duplicate follow-up keys are valid only for the exact expected sequence and mode. */
+export function _validFollowupDuplicate(
+	turn: { sequence: number; intent: { narrationMode?: TurnNarrationMode } },
+	expectedVersion: number,
+	mode: Exclude<TurnNarrationMode, 'ordinary_action'>
+): boolean {
+	return (
+		turn.sequence === expectedVersion + 1 &&
+		normalizeNarrationMode(turn.intent.narrationMode) === mode
+	);
+}
+
+/** Duplicate act keys are valid only for the exact expected sequence and ordinary action mode. */
+export function _validActDuplicate(
+	turn: { sequence: number; intent: { narrationMode?: TurnNarrationMode } },
+	expectedVersion: number
+): boolean {
+	return (
+		turn.sequence === expectedVersion + 1 &&
+		normalizeNarrationMode(turn.intent.narrationMode) === 'ordinary_action'
+	);
+}
+
+export function _phaseAfterEncounter(
+	roomType: RoomSnapshot['type'],
+	outcome: Parameters<typeof classifyEncounterOutcome>[0]
+): RunPhase {
+	if (!['monster', 'boss', 'trap'].includes(roomType)) return 'awaiting_proceed';
+	return classifyEncounterOutcome(outcome) === 'success' ? 'awaiting_loot' : 'awaiting_failure';
+}
+
 export const load: PageServerLoad = async (event) => {
 	const user = requireUser(event);
 	const parsedRunId = uuidSchema.safeParse(event.params.runId);
@@ -269,7 +326,7 @@ export const load: PageServerLoad = async (event) => {
 		.where(eq(users.id, user.id))
 		.limit(1);
 
-	const [recentTurns, recentEntries] = await Promise.all([
+	const [recentTurns, recentEntries, pendingTurns, exactVersionTurns] = await Promise.all([
 		db
 			.select()
 			.from(turns)
@@ -281,7 +338,21 @@ export const load: PageServerLoad = async (event) => {
 			.from(roomEntries)
 			.where(eq(roomEntries.runId, owned.run.id))
 			.orderBy(desc(roomEntries.roomNumber))
-			.limit(200)
+			.limit(200),
+		db
+			.select({ id: turns.id, sequence: turns.sequence, narrationStatus: turns.narrationStatus })
+			.from(turns)
+			.where(
+				and(
+					eq(turns.runId, owned.run.id),
+					or(eq(turns.narrationStatus, 'pending'), eq(turns.narrationStatus, 'streaming'))
+				)
+			)
+			.orderBy(asc(turns.sequence)),
+		db
+			.select()
+			.from(turns)
+			.where(and(eq(turns.runId, owned.run.id), eq(turns.sequence, owned.run.version)))
 	]);
 	const currentEntry =
 		recentEntries.find((entry) => entry.roomNumber === owned.run.roomNumber) ?? null;
@@ -289,10 +360,11 @@ export const load: PageServerLoad = async (event) => {
 	// narration recovery can still reach it on defeated runs. After proceeding to a
 	// new room, the changed room number naturally excludes the prior turn.
 	const currentTurn =
-		recentTurns.find(
+		exactVersionTurns.find(
 			(turn) =>
 				turn.sequence === owned.run.version && turn.roomSnapshot.roomNumber === owned.run.roomNumber
 		) ?? null;
+	const currentRoomRevealed = _currentRoomRevealed(owned.run, currentTurn);
 
 	const level =
 		owned.run.meta.startLevel ?? owned.run.roomData.run?.startLevel ?? owned.character.level;
@@ -356,11 +428,14 @@ export const load: PageServerLoad = async (event) => {
 		phase: owned.run.phase,
 		room: {
 			number: owned.run.roomNumber,
-			title: owned.run.roomData.name ?? `The ${owned.run.roomType}`,
-			kind: owned.run.roomType,
+			title: currentRoomRevealed
+				? (owned.run.roomData.name ?? `The ${owned.run.roomType}`)
+				: `Room ${owned.run.roomNumber}`,
+			revealed: currentRoomRevealed,
+			kind: currentRoomRevealed ? owned.run.roomType : null,
 			prose:
 				currentEntry?.prose ||
-				owned.run.roomData.description ||
+				(currentRoomRevealed ? owned.run.roomData.description : '') ||
 				'The dungeon waits in watchful silence.',
 			exits: [],
 			entryId: currentEntry?.id ?? null,
@@ -396,27 +471,35 @@ export const load: PageServerLoad = async (event) => {
 				outcome: turn.outcome,
 				rolls: Array.isArray(turn.rolls) ? turn.rolls : []
 			})),
-			...recentEntries.map((entry) => ({
-				kind: 'room' as const,
-				id: entry.id,
-				timestamp: entry.createdAt.toISOString(),
-				roomNumber: entry.roomNumber,
-				title: entry.roomSnapshot.name ?? `The ${entry.roomSnapshot.type}`,
-				roomKind: entry.roomSnapshot.type,
-				prose: entry.prose || entry.roomSnapshot.description || 'The chamber waits in silence.',
-				status: entry.status
-			}))
+			...recentEntries.map((entry) => {
+				const revealed = entry.roomNumber !== owned.run.roomNumber || currentRoomRevealed;
+				return {
+					kind: 'room' as const,
+					id: entry.id,
+					timestamp: entry.createdAt.toISOString(),
+					roomNumber: entry.roomNumber,
+					title: revealed
+						? (entry.roomSnapshot.name ?? `The ${entry.roomSnapshot.type}`)
+						: `Room ${entry.roomNumber}`,
+					revealed,
+					roomKind: revealed ? entry.roomSnapshot.type : null,
+					prose: entry.prose || entry.roomSnapshot.description || 'The chamber waits in silence.',
+					status: entry.status
+				};
+			})
 		]
 			.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
 			.slice(-200),
-		pendingNarrations: _pendingNarrationTargets(recentTurns, currentEntry, owned.run.phase),
+		pendingNarrations: _pendingNarrationTargets(pendingTurns, currentEntry, owned.run.phase),
 		suggestions,
 		expectedVersion: owned.run.version,
 		actionKey: randomUUID(),
 		actionKeys: Array.from({ length: suggestions.length + 1 }, () => randomUUID()),
 		proceedKey: randomUUID(),
+		followupKey: randomUUID(),
 		awaitingTurn:
-			owned.run.status === 'active' && owned.run.phase === 'awaiting_proceed' && currentTurn
+			['awaiting_loot', 'awaiting_failure', 'awaiting_proceed'].includes(owned.run.phase) &&
+			currentTurn
 				? {
 						id: currentTurn.id,
 						sequence: currentTurn.sequence,
@@ -435,6 +518,217 @@ export const load: PageServerLoad = async (event) => {
 
 	return data;
 };
+
+type FollowupMode = 'loot_search' | 'failure_consequence';
+
+async function followupAction(event: RequestEvent, mode: FollowupMode) {
+	assertSameOrigin(event);
+	const user = requireUser(event);
+	const enhanced = event.request.headers.get('x-sveltekit-action') === 'true';
+	const correlationId = randomUUID();
+	const runId = uuidSchema.safeParse(event.params.runId);
+	if (!runId.success) return fail(400, { error: 'Invalid run.' });
+	const form = await event.request.formData();
+	const expectedVersion = formInteger(form, 'expectedVersion');
+	const actionKey = uuidSchema.safeParse(form.get('actionKey'));
+	if (expectedVersion === null) return fail(400, { error: 'Invalid run version.' });
+	if (!actionKey.success) return fail(400, { error: 'Invalid action key.' });
+
+	type Result =
+		| { kind: 'resolved' | 'duplicate'; turnId: string; version: number }
+		| { kind: 'failure'; status: number; message: string };
+	let result: Result;
+	try {
+		result = await _afterCommit(
+			db.transaction(async (tx) => {
+				const recoveryDiagnostics: RecoveryDiagnostic[] = [];
+				const done = (value: Result) => ({ value, recoveryDiagnostics });
+				const [run] = await tx
+					.select()
+					.from(runs)
+					.where(and(eq(runs.id, runId.data), eq(runs.userId, user.id)))
+					.limit(1)
+					.for('update');
+				if (!run) return done({ kind: 'failure', status: 404, message: 'Run not found.' });
+
+				const [duplicate] = await tx
+					.select()
+					.from(turns)
+					.where(and(eq(turns.runId, run.id), eq(turns.actionKey, actionKey.data)))
+					.limit(1);
+				if (duplicate) {
+					if (!_validFollowupDuplicate(duplicate, expectedVersion, mode)) {
+						return done({
+							kind: 'failure',
+							status: 409,
+							message: 'This action key was already used for another turn.'
+						});
+					}
+					if (
+						!enhanced &&
+						(duplicate.narrationStatus === 'pending' || duplicate.narrationStatus === 'streaming')
+					) {
+						const recovered = await finalizeTurnFallback(tx, duplicate, correlationId);
+						recoveryDiagnostics.push(...recovered.diagnostics);
+					}
+					return done({ kind: 'duplicate', turnId: duplicate.id, version: duplicate.sequence });
+				}
+
+				const expectedPhase = mode === 'loot_search' ? 'awaiting_loot' : 'awaiting_failure';
+				if (run.phase !== expectedPhase) {
+					return done({
+						kind: 'failure',
+						status: 409,
+						message:
+							mode === 'loot_search'
+								? 'This room is not waiting to be searched.'
+								: 'This run has no unresolved failure.'
+					});
+				}
+				if (
+					(mode === 'loot_search' && run.status !== 'active') ||
+					(mode === 'failure_consequence' && !['active', 'defeated'].includes(run.status))
+				) {
+					return done({ kind: 'failure', status: 409, message: 'This run is already finished.' });
+				}
+				if (run.version !== expectedVersion) {
+					return done({
+						kind: 'failure',
+						status: 409,
+						message: 'This follow-up is stale. Reload the room and try again.'
+					});
+				}
+				const [prior] = await tx
+					.select()
+					.from(turns)
+					.where(and(eq(turns.runId, run.id), eq(turns.sequence, run.version)))
+					.limit(1)
+					.for('update');
+				if (!prior || prior.roomSnapshot.roomNumber !== run.roomNumber) {
+					return done({
+						kind: 'failure',
+						status: 409,
+						message: 'The encounter result does not match this room. Reload and try again.'
+					});
+				}
+				const priorClass = classifyEncounterOutcome(prior.outcome);
+				const encounterRoom = ['monster', 'boss', 'trap'].includes(prior.roomSnapshot.type);
+				if (
+					!encounterRoom ||
+					(mode === 'loot_search' && priorClass !== 'success') ||
+					(mode === 'failure_consequence' && priorClass === 'success')
+				) {
+					return done({
+						kind: 'failure',
+						status: 409,
+						message: 'The saved encounter result does not permit this follow-up.'
+					});
+				}
+				if (prior.narrationStatus !== 'complete' && prior.narrationStatus !== 'failed') {
+					if (enhanced) {
+						return done({
+							kind: 'failure',
+							status: 409,
+							message: 'Wait for the encounter narration to finish before continuing.'
+						});
+					}
+					const recovered = await finalizeTurnFallback(tx, prior, correlationId);
+					recoveryDiagnostics.push(...recovered.diagnostics);
+				}
+
+				const sequence = run.version + 1;
+				const actionText =
+					mode === 'loot_search'
+						? 'Search the room for anything worth carrying'
+						: 'Face the aftermath of the failed encounter';
+				const intent = { method: 'none' as const, advantage: 0, narrationMode: mode };
+				let inventory = run.inventory;
+				let hpAfter = run.hp;
+				let outcome;
+				if (mode === 'loot_search') {
+					const loot = drawEncounterLoot(run.roomData, run.seed, run.roomNumber);
+					const applied = applyLoot(run.inventory, run.hp, run.maxHp, loot);
+					inventory = applied.inventory;
+					hpAfter = applied.hpAfter;
+					const itemNames = loot.rewards.map((item) => item.name).join(', ');
+					const healing =
+						loot.consumedDraughtCount === 0
+							? ''
+							: applied.hpDelta > 0
+								? ` ${loot.consumedDraughtCount} healing draught${loot.consumedDraughtCount === 1 ? ' is' : 's are'} consumed, restoring ${applied.hpDelta} HP.`
+								: ` ${loot.consumedDraughtCount} healing draught${loot.consumedDraughtCount === 1 ? ' is' : 's are'} consumed, but your vitality is already full.`;
+					outcome = {
+						result: 'reward' as const,
+						hpBefore: run.hp,
+						hpAfter,
+						hpDelta: applied.hpDelta,
+						message: itemNames
+							? `You discover ${itemNames}.${healing}`
+							: 'The search turns up nothing worth carrying.',
+						rewards: loot.rewards,
+						carriedRewards: loot.carriedRewards
+					};
+				} else {
+					outcome = {
+						result: prior.outcome.result === 'defeat' ? ('defeat' as const) : ('failure' as const),
+						hpBefore: run.hp,
+						hpAfter: run.hp,
+						hpDelta: 0,
+						message: prior.outcome.message,
+						...(prior.outcome.injury ? { injury: prior.outcome.injury } : {})
+					};
+				}
+				const summary = fallbackSummary(run.roomData, actionText, outcome, mode);
+				const [turn] = await tx
+					.insert(turns)
+					.values({
+						runId: run.id,
+						sequence,
+						actionKey: actionKey.data,
+						actionText,
+						intent,
+						roomSnapshot: { ...structuredClone(run.roomData), roomNumber: run.roomNumber },
+						rolls: [],
+						outcome,
+						narration: enhanced ? '' : fallbackProse(run.roomData, actionText, outcome, [], mode),
+						narrationStatus: enhanced ? 'pending' : 'complete',
+						narrationUpdatedAt: enhanced ? null : new Date(),
+						turnSummary: summary
+					})
+					.returning({ id: turns.id });
+				await tx
+					.update(runs)
+					.set({
+						inventory,
+						hp: hpAfter,
+						version: sequence,
+						phase: 'awaiting_proceed',
+						summary
+					})
+					.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
+				return done({ kind: 'resolved', turnId: turn.id, version: sequence });
+			})
+		);
+	} catch {
+		return fail(500, { error: 'The follow-up could not be resolved. Please try again.' });
+	}
+	if (result.kind === 'failure') return fail(result.status, { error: result.message });
+	if (!enhanced && result.kind === 'resolved') {
+		for (const purpose of ['prose', 'summary'] as const) {
+			logLlmFallback({
+				purpose,
+				mode: 'non_enhanced',
+				reason: 'non_enhanced_request',
+				correlationId,
+				runId: runId.data,
+				targetId: result.turnId,
+				narrationKind: 'turn'
+			});
+		}
+	}
+	if (!enhanced) throw redirect(303, `/play/${runId.data}`);
+	return { success: true, turnId: result.turnId, roomEntryId: null, version: result.version };
+}
 
 export const actions: Actions = {
 	act: async (event) => {
@@ -485,7 +779,10 @@ export const actions: Actions = {
 				runId: preflight.run.id
 			});
 		}
-		const intent = toTurnIntent(normalizeActionIntent(preflight.run.roomData, mapped));
+		const intent = {
+			...toTurnIntent(normalizeActionIntent(preflight.run.roomData, mapped)),
+			narrationMode: 'ordinary_action' as const
+		};
 
 		type Resolution =
 			| { kind: 'duplicate'; turnId: string; roomEntryId: string | null; version: number }
@@ -517,7 +814,7 @@ export const actions: Actions = {
 						.where(and(eq(turns.runId, run.id), eq(turns.actionKey, actionKey.data)))
 						.limit(1);
 					if (duplicate) {
-						if (duplicate.sequence !== expectedVersion + 1) {
+						if (!_validActDuplicate(duplicate, expectedVersion)) {
 							return done({
 								kind: 'failure',
 								status: 409,
@@ -602,7 +899,18 @@ export const actions: Actions = {
 						return done({ kind: 'failure', status: 404, message: 'Company not found.' });
 
 					const sequence = run.version + 1;
-					const roomSnapshot = { ...structuredClone(run.roomData), roomNumber: run.roomNumber };
+					const pooledRoom = ensureEncounterRewardPool(run.roomData, run.seed, run.roomNumber);
+					const roomSnapshot = { ...structuredClone(pooledRoom), roomNumber: run.roomNumber };
+					if (pooledRoom !== run.roomData) {
+						await tx
+							.update(runs)
+							.set({ roomData: roomSnapshot })
+							.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
+						await tx
+							.update(roomEntries)
+							.set({ roomSnapshot })
+							.where(eq(roomEntries.id, entryState.id));
+					}
 					const level = run.meta.startLevel ?? run.roomData.run?.startLevel ?? character.level;
 					const baseStats = resolveRunBaseStats(run.meta, character);
 					const stats = deriveStats({
@@ -626,7 +934,12 @@ export const actions: Actions = {
 						hp: run.hp,
 						maxHp: run.maxHp
 					});
-					const fallbackTurnSummary = fallbackSummary(roomSnapshot, actionText, encounter.outcome);
+					const fallbackTurnSummary = fallbackSummary(
+						roomSnapshot,
+						actionText,
+						encounter.outcome,
+						intent.narrationMode
+					);
 					const [turn] = await tx
 						.insert(turns)
 						.values({
@@ -640,15 +953,24 @@ export const actions: Actions = {
 							outcome: encounter.outcome,
 							narration: enhanced
 								? ''
-								: fallbackProse(roomSnapshot, actionText, encounter.outcome, encounter.rolls),
+								: fallbackProse(
+										roomSnapshot,
+										actionText,
+										encounter.outcome,
+										encounter.rolls,
+										intent.narrationMode
+									),
 							narrationStatus: enhanced ? 'pending' : 'complete',
 							narrationUpdatedAt: enhanced ? null : new Date(),
 							turnSummary: fallbackTurnSummary
 						})
 						.returning({ id: turns.id });
 
-					const inventory = [...run.inventory, ...(encounter.outcome.rewards ?? [])];
-					if (encounter.outcome.hpAfter <= 0) {
+					const normalizedOutcome = normalizeTurnOutcome(encounter.outcome);
+					const inventory = [...run.inventory, ...(normalizedOutcome.carriedRewards ?? [])];
+					const encounterClass = classifyEncounterOutcome(encounter.outcome);
+					const nextPhase = _phaseAfterEncounter(roomSnapshot.type, encounter.outcome);
+					if (encounterClass === 'fatal') {
 						const completedRun = { ...run, inventory, version: sequence };
 						const gold = settlementGold(
 							completedRun.inventory,
@@ -676,6 +998,7 @@ export const actions: Actions = {
 								hp: 0,
 								inventory: [],
 								version: sequence,
+								phase: 'awaiting_failure',
 								summary: fallbackTurnSummary
 							})
 							.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
@@ -691,7 +1014,7 @@ export const actions: Actions = {
 								hp: encounter.outcome.hpAfter,
 								inventory,
 								version: sequence,
-								phase: 'awaiting_proceed',
+								phase: nextPhase,
 								summary: fallbackTurnSummary
 							})
 							.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
@@ -733,6 +1056,10 @@ export const actions: Actions = {
 			version: resolution.version
 		};
 	},
+
+	searchLoot: (event) => followupAction(event, 'loot_search'),
+
+	resolveFailure: (event) => followupAction(event, 'failure_consequence'),
 
 	proceed: async (event) => {
 		assertSameOrigin(event);
@@ -994,7 +1321,12 @@ export const actions: Actions = {
 					.where(eq(users.id, user.id));
 				await tx
 					.update(runs)
-					.set({ status: 'abandoned', finishedAt: new Date(), inventory: [] })
+					.set({
+						status: 'abandoned',
+						phase: 'ready',
+						finishedAt: new Date(),
+						inventory: []
+					})
 					.where(and(eq(runs.id, run.id), eq(runs.userId, user.id)));
 				await award(tx, user.id, {
 					firstDefeat: false,

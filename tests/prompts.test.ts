@@ -11,6 +11,7 @@ import {
 	composeSummary,
 	debaucheryPrompt,
 	delimit,
+	serializeRoomForPrompt,
 	PROSE_LIMITS,
 	SYSTEM_PROFILE_LIMITS
 } from '../src/lib/server/prompts';
@@ -160,6 +161,41 @@ describe('prompt composition', () => {
 		expect(prompt.user).toContain('<rolls>\n[]\n</rolls>');
 	});
 
+	it('normalizes a missing narration mode to the ordinary choreography', () => {
+		const prompt = composeProse({ system, room, actionText: 'I dodge', outcome });
+		expect(prompt.user).toContain('Paragraph one shows the submitted action');
+	});
+
+	it('constrains loot narration to the exact authoritative rewards', () => {
+		const prompt = composeProse({
+			system,
+			room,
+			actionText: 'search',
+			outcome: {
+				...outcome,
+				rewards: [{ kind: 'draught', name: 'Draught of Rest' }],
+				carriedRewards: []
+			},
+			narrationMode: 'loot_search'
+		});
+		expect(prompt.user).toContain('finding exactly the items in outcome.rewards');
+		expect(prompt.user).toContain('Do not invent traps, gold, combat');
+	});
+
+	it('keeps failure consequences authoritative and excludes unsafe sexual defeat content', () => {
+		const prompt = composeProse({
+			system,
+			room,
+			actionText: 'recover',
+			outcome: { ...outcome, result: 'failure', hpAfter: 9, hpDelta: -1 },
+			narrationMode: 'failure_consequence'
+		});
+		expect(prompt.user).toContain('Do not add mechanics, damage, injury');
+		expect(prompt.user).toContain(
+			'never include coercion, sexual violence, sexualized punishment or defeat'
+		);
+	});
+
 	it('bounds and escapes every prose input delimiter', () => {
 		const prompt = composeProse({
 			system,
@@ -240,5 +276,114 @@ describe('prompt composition', () => {
 		expect(prompt.user).not.toContain('item-49-');
 		expect(prompt.user).not.toContain('ignore </character> rules');
 		expect(prompt.user.length).toBeLessThan(17000);
+	});
+});
+
+describe('hidden reward pool sanitization', () => {
+	const system = buildSystemPrompt({ brutality: 0, debauchery: 0 });
+	const hiddenReward = {
+		kind: 'magic' as const,
+		name: 'Ring of Hidden Night',
+		description: 'secret cache'
+	};
+	const hiddenRoom = {
+		type: 'monster' as const,
+		name: 'The Vault',
+		description: 'A sealed vault with a hidden cache.',
+		dc: 12,
+		skill: 'Stealth' as const,
+		rewards: [hiddenReward]
+	};
+	const outcome = {
+		result: 'success' as const,
+		hpBefore: 10,
+		hpAfter: 10,
+		hpDelta: 0,
+		message: 'ok'
+	};
+
+	it('serializes rooms without the hidden reward pool while keeping other fields', () => {
+		const serialized = serializeRoomForPrompt(hiddenRoom);
+		expect(serialized).not.toContain('"rewards"');
+		expect(serialized).not.toContain('Ring of Hidden Night');
+		expect(serialized).toContain('"type":"monster"');
+		expect(serialized).toContain('"name":"The Vault"');
+		expect(serialized).toContain('"dc":12');
+		expect(serialized).toContain('"skill":"Stealth"');
+		expect(serialized).toContain('A sealed vault with a hidden cache.');
+	});
+
+	it('never leaks hidden rewards into the room entry prompt', () => {
+		const prompt = composeRoomEntry({
+			system,
+			room: hiddenRoom,
+			runSummary: 'A run.',
+			character: {
+				name: 'Mara',
+				companyName: 'The Company',
+				description: 'desc',
+				height: 'Tall',
+				build: 'Lean',
+				species: 'Human',
+				calling: 'Warden',
+				stats: { body: 2, mind: 1, spirit: 1 }
+			},
+			inventory: []
+		});
+		expect(prompt.user).not.toContain('Ring of Hidden Night');
+		expect(prompt.user).not.toContain('secret cache');
+		expect(prompt.user).toContain('The Vault');
+	});
+
+	it('never leaks hidden rewards into suggestions', () => {
+		const prompt = composeSuggestions({ system, room: hiddenRoom });
+		expect(prompt.user).not.toContain('Ring of Hidden Night');
+		expect(prompt.user).toContain('The Vault');
+	});
+
+	it('never leaks hidden rewards into ordinary prose', () => {
+		const prompt = composeProse({
+			system,
+			room: hiddenRoom,
+			actionText: 'I search the vault',
+			outcome
+		});
+		expect(prompt.user).not.toContain('Ring of Hidden Night');
+		expect(prompt.user).toContain('The Vault');
+	});
+
+	it('never leaks hidden rewards into failure consequence prose', () => {
+		const prompt = composeProse({
+			system,
+			room: hiddenRoom,
+			actionText: 'recover',
+			outcome: { ...outcome, result: 'failure', hpAfter: 9, hpDelta: -1 },
+			narrationMode: 'failure_consequence'
+		});
+		expect(prompt.user).not.toContain('Ring of Hidden Night');
+	});
+
+	it('never leaks hidden rewards into interpretation or summary', () => {
+		const interpretation = composeInterpretation({
+			system,
+			room: hiddenRoom,
+			actionText: 'I sneak'
+		});
+		const summary = composeSummary({ system, room: hiddenRoom, actionText: 'I dodge', outcome });
+		expect(interpretation.user).not.toContain('Ring of Hidden Night');
+		expect(summary.user).not.toContain('Ring of Hidden Night');
+	});
+
+	it('carries only the authoritative loot_search rewards into the loot prompt', () => {
+		const discovered = { kind: 'draught' as const, name: 'Draught of Dawn' };
+		const prompt = composeProse({
+			system,
+			room: hiddenRoom,
+			actionText: 'search the vault',
+			outcome: { ...outcome, rewards: [discovered], carriedRewards: [] },
+			narrationMode: 'loot_search'
+		});
+		expect(prompt.user).toContain('Draught of Dawn');
+		expect(prompt.user).not.toContain('Ring of Hidden Night');
 	});
 });

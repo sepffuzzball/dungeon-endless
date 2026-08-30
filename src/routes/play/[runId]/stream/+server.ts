@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { requireUser } from '$lib/server/authorization';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
-import { deriveStats, resolveRunBaseStats } from '$lib/server/game';
+import { deriveStats, normalizeNarrationMode, resolveRunBaseStats } from '$lib/server/game';
 import {
 	fallbackProse,
 	fallbackRoomEntry,
@@ -447,6 +447,7 @@ export const GET: RequestHandler = async (event) => {
 							.where(and(eq(turns.id, targetId), eq(turns.runId, owned.run.id)))
 							.limit(1);
 						if (!turn) throw new Error('Turn disappeared');
+						const narrationMode = normalizeNarrationMode(turn.intent.narrationMode);
 						accumulated = turn.narration;
 						send(formatSseEvent('snapshot', { text: accumulated }));
 						if (accumulated) throw new Error('Recovered partial narration');
@@ -456,6 +457,7 @@ export const GET: RequestHandler = async (event) => {
 							actionText: turn.actionText,
 							outcome: turn.outcome,
 							rolls: Array.isArray(turn.rolls) ? turn.rolls : [],
+							narrationMode,
 							endpoints,
 							signal,
 							diagnostics,
@@ -476,13 +478,19 @@ export const GET: RequestHandler = async (event) => {
 							}
 							send(formatSseEvent('chunk', { text: chunk.content }));
 						}
-						let summary = fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome);
+						let summary = fallbackSummary(
+							turn.roomSnapshot,
+							turn.actionText,
+							turn.outcome,
+							narrationMode
+						);
 						try {
 							summary = await summarizeTurn({
 								system: prompt(owned.run, owned.character),
 								room: turn.roomSnapshot,
 								actionText: turn.actionText,
 								outcome: turn.outcome,
+								narrationMode,
 								endpoints,
 								diagnostics
 							});
@@ -624,7 +632,12 @@ export const GET: RequestHandler = async (event) => {
 							.where(and(eq(turns.id, targetId), eq(turns.runId, owned.run.id)))
 							.limit(1);
 						const summary = turn
-							? fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome)
+							? fallbackSummary(
+									turn.roomSnapshot,
+									turn.actionText,
+									turn.outcome,
+									normalizeNarrationMode(turn.intent.narrationMode)
+								)
 							: 'The dungeon falls silent.';
 						if (!accumulated) {
 							accumulated = turn
@@ -632,7 +645,8 @@ export const GET: RequestHandler = async (event) => {
 										turn.roomSnapshot,
 										turn.actionText,
 										turn.outcome,
-										Array.isArray(turn.rolls) ? turn.rolls : []
+										Array.isArray(turn.rolls) ? turn.rolls : [],
+										normalizeNarrationMode(turn.intent.narrationMode)
 									)
 								: 'The dungeon falls silent.';
 						}

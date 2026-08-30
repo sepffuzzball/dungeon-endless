@@ -5,10 +5,19 @@ function boolFromEnv(value: string | undefined, fallback: boolean): boolean {
 	return value === 'true' || value === '1';
 }
 
-function intFromEnv(value: string | undefined, fallback: number): number {
+/**
+ * Parse a strict decimal integer from an environment variable. Returns the
+ * fallback when the variable is undefined; returns NaN for any other input so
+ * that zod rejects the value and startup reports the offending config key
+ * instead of silently truncating. Formatted values such as `1_048_576`,
+ * `1,048,576`, or `1MB` are rejected; only plain digits are accepted.
+ */
+export function intFromEnv(value: string | undefined, fallback: number): number {
 	if (value === undefined) return fallback;
-	const parsed = Number.parseInt(value, 10);
-	return Number.isFinite(parsed) ? parsed : fallback;
+	const trimmed = value.trim();
+	if (!/^\d+$/.test(trimmed)) return Number.NaN;
+	const parsed = Number(trimmed);
+	return Number.isSafeInteger(parsed) ? parsed : Number.NaN;
 }
 
 const configSchema = z.object({

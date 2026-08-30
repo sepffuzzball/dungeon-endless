@@ -91,7 +91,7 @@ Endpoint records have one of four purposes:
 
 Enabled endpoints are tried in name order for their purpose. URLs and all resolved A/AAAA addresses are validated immediately before each request, redirects are not followed, reads and token counts are bounded, and failures fall through to the next endpoint. If all endpoints fail or none are configured, deterministic action heuristics, suggestions, prose, and summaries are used. Model output never controls dice, targets, rewards, health, inventory, or settlement. No model or network call occurs inside a database transaction.
 
-`LLM_MAX_RESPONSE_BYTES=8192` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text. Verbose local servers may need `262144` or larger; keep a finite bound in every deployment.
+`LLM_MAX_RESPONSE_BYTES=8192` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text. Values must be plain digits without separators or units (see `Troubleshooting LLM environment limits`). Verbose local servers may need `262144` or larger; keep a finite bound in every deployment.
 
 ### LLM fallback diagnostics
 
@@ -171,19 +171,31 @@ The app container waits for PostgreSQL, applies migrations, runs idempotent admi
 
 ### Troubleshooting LLM environment limits
 
-Compose only forwards `.env` values into a service when that service's entry in `docker-compose.yml` explicitly references them. Earlier versions did not reference `LLM_MAX_TOKENS`, `LLM_MAX_RESPONSE_BYTES`, or `LLM_TIMEOUT_MS`, so the app silently used its built-in defaults (600 tokens, 8192 bytes, 20000 ms) even when `.env` set other values. The current Compose file forwards all three, but changing `.env` while a container is already running has no effect until the container is recreated:
+Compose only forwards `.env` values into a service when that service's entry in `docker-compose.yml` explicitly references them. Earlier versions did not reference `LLM_MAX_TOKENS`, `LLM_MAX_RESPONSE_BYTES`, or `LLM_TIMEOUT_MS`, so the app silently used its built-in defaults (600 tokens, 8192 bytes, 20000 ms) even when `.env` set other values. The current Compose file forwards all three, quoted so the container always receives strings, but changing `.env` while a container is already running has no effect until the app image is rebuilt and the container is recreated:
 
 ```sh
-docker compose up -d --force-recreate app
+docker compose up -d --build --force-recreate app
 ```
 
-Verify the values actually reached the container:
+When using a published GHCR image, pull the new image first so the rebuild step has something current to run:
 
 ```sh
-docker compose exec app sh -lc 'env | grep ^LLM_'
+docker pull ghcr.io/<owner>/dungeon-endless:<tag>
 ```
 
-`LLM_MAX_RESPONSE_BYTES` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text; verbose local servers may need `262144` or larger. Keep a finite bound in every deployment.
+The numeric limits are parsed as plain decimal integers only. Values must be plain digits without separators, units, decimals, or exponent notation: `1048576` is accepted, while `1_048_576`, `1,048,576`, and `1MB` are rejected. An invalid value is not silently truncated to `1`; startup instead reports the offending key, for example `Invalid environment configuration for: LLM_MAX_RESPONSE_BYTES`. Verify what Compose will pass to the container:
+
+```sh
+docker compose config | grep LLM_MAX_RESPONSE_BYTES
+```
+
+And verify what the running process actually parsed after recreation:
+
+```sh
+docker compose exec app sh -lc 'printf "%s\n" "$LLM_MAX_RESPONSE_BYTES"'
+```
+
+A fallback diagnostic of `configuredResponseByteLimit:1` means the running process actually parsed the value as `1`, not as `1048576` with a typo; recheck that `.env` holds the exact plain-digit value. `LLM_MAX_RESPONSE_BYTES` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text; verbose local servers may need `262144` or larger. Keep a finite bound in every deployment.
 
 ## GHCR publishing and package permissions
 

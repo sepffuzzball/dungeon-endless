@@ -12,7 +12,12 @@ import {
 	deriveStats,
 	canIncreaseStat,
 	gearUpgradeCost,
+	formatDice,
+	formatItemEffects,
+	generateDraught,
+	generateMagicItem,
 	generateRewardPool,
+	generateValuable,
 	generateRoom,
 	drawEncounterLoot,
 	ensureEncounterRewardPool,
@@ -21,11 +26,13 @@ import {
 	mapActionIntent,
 	normalizeActionIntent,
 	normalizeNarrationMode,
+	normalizeInventoryItem,
 	normalizeTurnOutcome,
 	provisionExpeditionLoot,
 	resolveEncounter,
 	resolveRunBaseStats,
 	settlementGold,
+	selectLootRarity,
 	sellValue,
 	skillPrimary,
 	toTurnIntent,
@@ -33,11 +40,12 @@ import {
 	validCharacterAge,
 	validImageUrl
 } from '../src/lib/server/game';
-import { createRng } from '../src/lib/server/rng';
+import { createRng, type Rng } from '../src/lib/server/rng';
 import { runPhaseEnum } from '../src/lib/server/schema';
 import type {
 	DerivedStats,
 	InventoryItem,
+	ItemRarity,
 	RoomSnapshot,
 	RunPhase,
 	TurnIntent,
@@ -128,8 +136,7 @@ describe('deriveStats', () => {
 			spirit: 4,
 			level: 1,
 			hp: 9,
-			maxHp: 12,
-			defense: 9
+			maxHp: 12
 		});
 		expect(stats.body).toBe(2);
 		expect(stats.mind).toBe(3);
@@ -154,7 +161,6 @@ describe('deriveStats', () => {
 			level: 1,
 			hp: 10,
 			maxHp: 10,
-			defense: 10,
 			inventory: items
 		});
 		expect(stats.body).toBe(6);
@@ -173,7 +179,6 @@ describe('deriveStats', () => {
 			level: 1,
 			hp: 10,
 			maxHp: 10,
-			defense: 10,
 			inventory: items
 		});
 		expect(stats.body).toBe(6); // 1 base + cap of 5
@@ -193,16 +198,15 @@ describe('deriveStats', () => {
 			level: 1,
 			hp: 10,
 			maxHp: 10,
-			defense: 10,
 			inventory: items
 		});
 		expect(stats.attackBonus).toBe(10);
-		expect(stats.defense).toBe(11);
+		expect(stats.defense).toBe(9);
 		expect(stats.skillValues.Magic).toBe(4);
 	});
 
 	it('does not add level to Attack', () => {
-		const source = { body: 2, mind: 1, spirit: 1, hp: 10, maxHp: 10, defense: 10 };
+		const source = { body: 2, mind: 1, spirit: 1, hp: 10, maxHp: 10 };
 		expect(deriveStats({ ...source, level: 1 }).attackBonus).toBe(4);
 		expect(deriveStats({ ...source, level: 10 }).attackBonus).toBe(4);
 	});
@@ -215,7 +219,6 @@ describe('deriveStats', () => {
 			level: 3,
 			hp: 10,
 			maxHp: 10,
-			defense: 8,
 			inventory: [
 				{ kind: 'magic', name: 'Body', stat: 'body' },
 				{ kind: 'magic', name: 'Mind', stat: 'mind' },
@@ -246,7 +249,6 @@ describe('deriveStats', () => {
 			level: 6,
 			hp: 10,
 			maxHp: 10,
-			defense: 11,
 			inventory
 		});
 		expect(stats.attackBonus).toBe(21);
@@ -260,7 +262,6 @@ describe('deriveStats', () => {
 			level: 9,
 			hp: 10,
 			maxHp: 10,
-			defense: 14,
 			inventory: [{ kind: 'magic', name: 'Weapon', stat: 'attack' }]
 		});
 		const encounter = resolve(
@@ -270,6 +271,36 @@ describe('deriveStats', () => {
 		);
 		expect(encounter.rolls[0]?.modifier).toBe(5);
 		expect(encounter.rolls[0]?.total).toBe((encounter.rolls[0]?.selected ?? 0) + 5);
+	});
+
+	it('stacks multi-effects, caps only primary equipment, and derives Defense from Body', () => {
+		const stats = deriveStats({
+			body: 2,
+			mind: 1,
+			spirit: 1,
+			level: 4,
+			hp: 9,
+			maxHp: 9,
+			inventory: [
+				{
+					kind: 'magic',
+					name: 'Many-fold plate',
+					effects: [
+						{ target: 'general', amount: 4 },
+						{ target: 'body', amount: 4 },
+						{ target: 'attack', amount: 7 },
+						{ target: 'defense', amount: 6 },
+						{ target: 'skill', skill: 'Athletics', amount: 8 }
+					]
+				}
+			]
+		});
+		expect(stats.body).toBe(7);
+		expect(stats.mind).toBe(5);
+		expect(stats.spirit).toBe(5);
+		expect(stats.attackBonus).toBe(24);
+		expect(stats.defense).toBe(18);
+		expect(stats.skillValues.Athletics).toBe(15);
 	});
 });
 
@@ -281,7 +312,6 @@ describe('deriveStatBreakdowns', () => {
 		level: 4,
 		hp: 8,
 		maxHp: 10,
-		defense: 9,
 		inventory,
 		gearCap
 	});
@@ -314,7 +344,7 @@ describe('deriveStatBreakdowns', () => {
 		expectTotalsMatch(source);
 		const breakdowns = deriveStatBreakdowns(source);
 		expect(breakdowns.attributes.body.parts.map((part) => part.value)).toEqual([2, 0, 0]);
-		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 4, 0]);
+		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 2, 0]);
 		expect(breakdowns.attack.parts).toEqual([
 			{ label: 'Effective Body', value: 2 },
 			{ label: 'Effective Mind', value: 3 },
@@ -343,7 +373,7 @@ describe('deriveStatBreakdowns', () => {
 		expect(breakdowns.attributes.body.parts.map((part) => part.value)).toEqual([2, 2, 1]);
 		expect(breakdowns.skills.Athletics.parts.map((part) => part.value)).toEqual([5, 2]);
 		expect(breakdowns.attack.parts.map((part) => part.value)).toEqual([5, 5, 3, 1]);
-		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 4, 1]);
+		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 5, 1]);
 		// General and Body gear improve Attack exactly once through effective attributes.
 		expect(breakdowns.attack.total).toBe(14);
 	});
@@ -473,10 +503,13 @@ describe('persistent progression', () => {
 });
 
 describe('expedition starting loot', () => {
-	it('returns no items for zero and exactly one item per valid gear bonus', () => {
-		expect(provisionExpeditionLoot('count', 0)).toEqual([]);
-		for (const count of [1, 2, 3]) {
-			expect(provisionExpeditionLoot('count', count)).toHaveLength(count);
+	it('returns the exact cumulative magic rarity loadout for each gear bonus', () => {
+		const tiers = ['common', 'uncommon', 'rare', 'very_rare'];
+		for (const bonus of [0, 1, 2, 3]) {
+			const loot = provisionExpeditionLoot('count', bonus);
+			expect(loot).toHaveLength(bonus + 1);
+			expect(loot.map((item) => item.rarity)).toEqual(tiers.slice(0, bonus + 1));
+			expect(loot.every((item) => item.kind === 'magic')).toBe(true);
 		}
 	});
 
@@ -504,7 +537,7 @@ describe('expedition starting loot', () => {
 	it('applies generated magic loot through normal inventory stat derivation', () => {
 		const loot = provisionExpeditionLoot('alpha', 1);
 		expect(loot[0].kind).toBe('magic');
-		const input = { body: 1, mind: 1, spirit: 1, level: 3, hp: 8, maxHp: 8, defense: 8 };
+		const input = { body: 1, mind: 1, spirit: 1, level: 3, hp: 8, maxHp: 8 };
 		expect(deriveStats({ ...input, inventory: loot })).not.toEqual(deriveStats(input));
 	});
 
@@ -523,7 +556,11 @@ describe('expedition starting loot', () => {
 });
 
 describe('abandonSettlementGold', () => {
-	const starting = (name: string): InventoryItem => ({ kind: 'valuable', name, source: 'starting' });
+	const starting = (name: string): InventoryItem => ({
+		kind: 'valuable',
+		name,
+		source: 'starting'
+	});
 	const unmarked = (name: string): InventoryItem => ({ kind: 'valuable', name });
 
 	it('pays nothing for an immediate abandon holding only starting loot', () => {
@@ -915,6 +952,32 @@ describe('resolveEncounter', () => {
 		expect(result.outcome.carriedRewards).toEqual([]);
 	});
 
+	it('records immediate treasure maximum-HP changes in the authoritative outcome', () => {
+		const draught: InventoryItem = {
+			kind: 'draught',
+			name: 'Draught of Ascension',
+			rarity: 'artifact',
+			maxHpIncrease: 5,
+			fullHeal: true,
+			value: 0
+		};
+		const result = resolve(
+			room({ type: 'treasure', rewards: [draught] }),
+			{ method: 'none', advantage: 0 },
+			baseStats(),
+			3,
+			10
+		);
+		expect(result.outcome).toMatchObject({
+			hpBefore: 3,
+			hpAfter: 15,
+			hpDelta: 12,
+			maxHpBefore: 10,
+			maxHpAfter: 15,
+			maxHpDelta: 5
+		});
+	});
+
 	it('rests and recovers 1 HP', () => {
 		const result = resolve(
 			room({ type: 'rest' }),
@@ -1009,6 +1072,28 @@ describe('sellValue', () => {
 		expect(valuable).toBeLessThanOrEqual(6);
 		expect(sellValue({ kind: 'draught', name: 'D' }, rng)).toBe(0);
 	});
+
+	it('returns 0 for a draught with fixed value or dice and draws no RNG', () => {
+		let draws = 0;
+		const rng: Rng = {
+			next: () => 0,
+			d10: () => 1,
+			range: (min) => {
+				draws += 1;
+				return min;
+			},
+			pick: (items) => items[0],
+			weighted: (items) => items[0]
+		};
+		const draught: InventoryItem = {
+			kind: 'draught',
+			name: 'Fixed draught',
+			value: 9,
+			valueDice: { count: 6, sides: 6 }
+		};
+		expect(sellValue(draught, rng)).toBe(0);
+		expect(draws).toBe(0);
+	});
 });
 
 describe('generateRewardPool', () => {
@@ -1078,7 +1163,13 @@ describe('post-encounter loot foundation', () => {
 
 	it('applies multiple draughts with capped healing and preserves carried gear effects', () => {
 		const applied = applyLoot([], 8, 10, { carried: [magic], consumedDraughtCount: 3 });
-		expect(applied).toEqual({ inventory: [magic], hpAfter: 10, hpDelta: 2 });
+		expect(applied).toEqual({
+			inventory: [magic],
+			hpAfter: 10,
+			hpDelta: 2,
+			maxHpAfter: 10,
+			maxHpDelta: 0
+		});
 		expect(
 			deriveStats({
 				body: 1,
@@ -1087,7 +1178,6 @@ describe('post-encounter loot foundation', () => {
 				level: 1,
 				hp: applied.hpAfter,
 				maxHp: 10,
-				defense: 6,
 				inventory: applied.inventory
 			}).attackBonus
 		).toBe(2);
@@ -1107,5 +1197,255 @@ describe('post-encounter loot foundation', () => {
 		expect(classifyEncounterOutcome(legacy)).toBe('success');
 		expect(classifyEncounterOutcome({ ...legacy, result: 'failure' })).toBe('failure');
 		expect(classifyEncounterOutcome({ ...legacy, result: 'defeat', hpAfter: 0 })).toBe('fatal');
+	});
+});
+
+describe('canonical loot normalization', () => {
+	it('normalizes legacy gear and values without mutating the source', () => {
+		const source: InventoryItem = { kind: 'magic', name: 'Old ward', stat: 'defense' };
+		const before = structuredClone(source);
+		expect(normalizeInventoryItem(source)).toMatchObject({
+			rarity: 'common',
+			effects: [{ target: 'defense', amount: 1 }],
+			valueDice: { count: 1, sides: 2 }
+		});
+		expect(source).toEqual(before);
+	});
+
+	it('keeps valid explicit effects authoritative and ignores malformed data safely', () => {
+		const malformed = {
+			kind: 'magic',
+			name: 'Oddity',
+			stat: 'attack',
+			rarity: 'mythic',
+			effects: [
+				{ target: 'body', amount: 2 },
+				{ target: 'skill', amount: 2 },
+				{ target: 'mind', amount: 0 }
+			],
+			valueDice: { count: 0, sides: 6 }
+		} as unknown as InventoryItem;
+		expect(normalizeInventoryItem(malformed)).toMatchObject({
+			rarity: 'common',
+			effects: [{ target: 'body', amount: 2 }],
+			valueDice: { count: 1, sides: 2 }
+		});
+	});
+
+	it('gives fixed nonnegative value precedence over explicit dice', () => {
+		const item: InventoryItem = {
+			kind: 'valuable',
+			name: 'Known coin',
+			value: 7,
+			valueDice: { count: 6, sides: 6 }
+		};
+		expect(normalizeInventoryItem(item)).toMatchObject({ value: 7, valueDice: undefined });
+	});
+
+	it('ignores fractional, unsafe and negative fixed values and falls through to dice', () => {
+		const badValue = (value: unknown): InventoryItem =>
+			({ kind: 'valuable', name: 'Bad value', value }) as unknown as InventoryItem;
+		const fallback = { value: undefined, valueDice: { count: 1, sides: 6 } };
+		expect(normalizeInventoryItem(badValue(1.5))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badValue(-3))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badValue(Number.MAX_SAFE_INTEGER + 1))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badValue(Number.NaN))).toMatchObject(fallback);
+	});
+
+	it('ignores huge, fractional and invalid dice without long loops', () => {
+		const badDice = (valueDice: unknown): InventoryItem =>
+			({ kind: 'valuable', name: 'Bad dice', valueDice }) as unknown as InventoryItem;
+		const fallback = { valueDice: { count: 1, sides: 6 } };
+		expect(normalizeInventoryItem(badDice({ count: 1_000_000, sides: 6 }))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badDice({ count: 1.5, sides: 6 }))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badDice({ count: 0, sides: 6 }))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badDice({ count: 3, sides: 1 }))).toMatchObject(fallback);
+		expect(normalizeInventoryItem(badDice({ count: 3, sides: 1000 }))).toMatchObject(fallback);
+		expect(
+			normalizeInventoryItem(badDice({ count: Number.MAX_SAFE_INTEGER + 1, sides: 6 }))
+		).toMatchObject(fallback);
+	});
+
+	it('formats dice and effect summaries', () => {
+		expect(formatDice({ count: 3, sides: 8 })).toBe('3d8');
+		expect(
+			formatItemEffects([
+				{ target: 'attack', amount: 3 },
+				{ target: 'skill', skill: 'Magic', amount: 1 }
+			])
+		).toBe('attack +3, Magic +1');
+	});
+});
+
+describe('rarity generation tables', () => {
+	const rarities: ItemRarity[] = [
+		'common',
+		'uncommon',
+		'rare',
+		'very_rare',
+		'legendary',
+		'artifact'
+	];
+	const rows = [
+		{ depth: 1, weights: [70, 25, 5, 0, 0, 0] },
+		{ depth: 4, weights: [70, 25, 5, 0, 0, 0] },
+		{ depth: 5, weights: [55, 30, 12, 3, 0, 0] },
+		{ depth: 10, weights: [40, 30, 20, 8, 2, 0] },
+		{ depth: 20, weights: [25, 30, 25, 14, 5, 1] },
+		{ depth: 35, weights: [15, 25, 25, 20, 12, 3] },
+		{ depth: 50, weights: [10, 20, 25, 22, 16, 7] }
+	];
+
+	function thresholdRng(value: number): Rng {
+		const next = () => value;
+		return {
+			next,
+			d10: () => 1,
+			range: (min) => min,
+			pick: (items) => items[0],
+			weighted: (items) => {
+				let roll = value * items.reduce((sum, item) => sum + item.weight, 0);
+				for (const item of items) {
+					roll -= item.weight;
+					if (roll < 0) return item;
+				}
+				return items[items.length - 1];
+			}
+		};
+	}
+
+	it('uses every exact depth-boundary weight row', () => {
+		for (const row of rows) {
+			for (let bucket = 0; bucket < 100; bucket++) {
+				let cursor = bucket;
+				const expected = rarities[row.weights.findIndex((weight) => (cursor -= weight) < 0)];
+				expect(selectLootRarity(thresholdRng((bucket + 0.5) / 100), row.depth)).toBe(expected);
+			}
+		}
+	});
+
+	it('generates exact magic and valuable dice with legal distinct effect sets', () => {
+		const dice = ['1d2', '2d2', '2d4', '2d6', '3d8', '4d10'];
+		for (const [index, rarity] of rarities.entries()) {
+			const magic = generateMagicItem(createRng('magic', index, 0, rarity), rarity);
+			expect(formatDice(magic.valueDice!)).toBe(dice[index]);
+			expect(new Set(magic.effects!.map((item) => item.target)).size).toBe(magic.effects!.length);
+			expect(magic.description).toContain(formatItemEffects(magic.effects!));
+			const valuable = generateValuable(createRng('valuable', index, 0, rarity), rarity);
+			expect(valuable.valueDice).toEqual({ count: index + 1, sides: 6 });
+		}
+		expect(generateMagicItem(createRng('artifact', 1, 1, 'a'), 'artifact').effects).toEqual([
+			{ target: 'body', amount: 1 },
+			{ target: 'mind', amount: 1 },
+			{ target: 'spirit', amount: 1 },
+			{ target: 'attack', amount: 3 },
+			{ target: 'defense', amount: 3 }
+		]);
+	});
+});
+
+describe('rarity draught vitality', () => {
+	const rarities: ItemRarity[] = [
+		'common',
+		'uncommon',
+		'rare',
+		'very_rare',
+		'legendary',
+		'artifact'
+	];
+
+	it('applies every generated draught table entry', () => {
+		for (let rank = 0; rank < 4; rank++) {
+			const draught = generateDraught(createRng('drink', rank, 0, 'd'), rarities[rank]);
+			const applied = applyLoot([], 9, 10, { consumedDraughts: [draught] });
+			expect(applied.hpAfter).toBe(9 + rank + 1);
+			expect(applied.maxHpAfter).toBe(10 + rank);
+		}
+		for (const [rarity, increase] of [
+			['legendary', 4],
+			['artifact', 5]
+		] as const) {
+			const applied = applyLoot([], 2, 10, {
+				consumedDraughts: [generateDraught(createRng('drink', increase, 0, 'd'), rarity)]
+			});
+			expect(applied).toMatchObject({ hpAfter: 10 + increase, maxHpAfter: 10 + increase });
+		}
+	});
+
+	it('retains legacy capped heal-one behavior and applies mixed draughts in order', () => {
+		expect(
+			applyLoot([], 10, 10, { consumedDraughts: [{ kind: 'draught', name: 'Old' }] })
+		).toMatchObject({
+			hpAfter: 10,
+			maxHpAfter: 10
+		});
+		const applied = applyLoot([], 10, 10, {
+			consumedDraughts: [
+				generateDraught(createRng('order', 1, 0, 'd'), 'common'),
+				generateDraught(createRng('order', 2, 0, 'd'), 'legendary')
+			]
+		});
+		expect(applied).toMatchObject({ hpAfter: 15, maxHpAfter: 15, hpDelta: 5, maxHpDelta: 5 });
+	});
+});
+
+describe('settlement compatibility and RNG stability', () => {
+	it('does not draw for unsellable or fixed-value items and rolls explicit dice count times', () => {
+		let draws = 0;
+		const rng: Rng = {
+			next: () => 0,
+			d10: () => 1,
+			range: (min) => {
+				draws += 1;
+				return min;
+			},
+			pick: (items) => items[0],
+			weighted: (items) => items[0]
+		};
+		expect(sellValue({ kind: 'valuable', name: 'No', sellable: false }, rng)).toBe(0);
+		expect(sellValue({ kind: 'valuable', name: 'Fixed', value: 9 }, rng)).toBe(9);
+		expect(draws).toBe(0);
+		expect(
+			sellValue({ kind: 'valuable', name: 'Dice', valueDice: { count: 3, sides: 6 } }, rng)
+		).toBe(3);
+		expect(draws).toBe(3);
+	});
+
+	it('sells huge and fractional dice as a single legacy draw instead of looping', () => {
+		let draws = 0;
+		const rng: Rng = {
+			next: () => 0,
+			d10: () => 1,
+			range: (min) => {
+				draws += 1;
+				return min;
+			},
+			pick: (items) => items[0],
+			weighted: (items) => items[0]
+		};
+		const huge: InventoryItem = {
+			kind: 'valuable',
+			name: 'Huge dice',
+			valueDice: { count: 1_000_000, sides: 6 }
+		};
+		const fractional: InventoryItem = {
+			kind: 'valuable',
+			name: 'Fractional dice',
+			valueDice: { count: 2.5, sides: 6 }
+		};
+		expect(sellValue(huge, rng)).toBe(1);
+		expect(sellValue(fractional, rng)).toBe(1);
+		expect(draws).toBe(2);
+	});
+});
+
+describe('rules-version reward compatibility', () => {
+	it('keeps explicit empty rewards immutable and synthesizes deterministic legacy pools', () => {
+		const empty = room({ type: 'monster', rewards: [] });
+		expect(ensureEncounterRewardPool(empty, 'v3', 8, 3)).toBe(empty);
+		const legacy = ensureEncounterRewardPool(room({ type: 'monster' }), 'v2', 8, 2);
+		expect(legacy.rewards).toHaveLength(3);
+		expect(legacy.rewards!.every((item) => item.rarity === undefined)).toBe(true);
+		expect(ensureEncounterRewardPool(room({ type: 'monster' }), 'v2', 8, 2)).toEqual(legacy);
 	});
 });

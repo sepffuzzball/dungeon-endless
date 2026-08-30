@@ -232,8 +232,7 @@
 {/if}
 
 <div class="play-layout">
-	<details class="card run-panel" aria-label="Run status and inventory" open>
-		<summary>Run status and inventory</summary>
+	<aside class="card run-panel" aria-label="Character status and inventory">
 		<div class="run-panel-content">
 			<div class="eyebrow">Wayfarer</div>
 			<h2>{data.character.name}</h2>
@@ -292,36 +291,47 @@
 					<dd>{data.companyGold}</dd>
 				</div>
 			</dl>
-			<div class="inventory-head">
-				<div class="eyebrow">Inventory</div>
-				<span>{data.inventory.length}</span>
-			</div>
-			{#if data.inventory.length === 0}
-				<p class="inventory-empty">Nothing carried. Only nerve and torchlight remain.</p>
-			{:else}
-				<ul class="inventory-list">
-					{#each data.inventory as item, index (`${item.name}-${index}`)}
-						<li>
-							<div><strong>{item.name}</strong><span class="badge gold">{item.kind}</span></div>
-							<p>{item.description || 'No description recorded.'}</p>
-							<div class="item-meta">
-								{#if item.stat}<span>Effect: {item.stat}{item.skill ? ` / ${item.skill}` : ''}</span
-									>{/if}
-								{#if item.value !== undefined}<span>Value: {item.value}</span>{/if}
-							</div>
-						</li>
-					{/each}
-				</ul>
-			{/if}
+			<details class="inventory-disclosure" open>
+				<summary>
+					<span class="inventory-summary-label">Inventory</span>
+					<span class="inventory-count">{data.inventory.length}</span>
+				</summary>
+				<div class="inventory-body">
+					{#if data.inventory.length === 0}
+						<p class="inventory-empty">Nothing carried. Only nerve and torchlight remain.</p>
+					{:else}
+						<ul class="inventory-list">
+							{#each data.inventory as item, index (`${item.name}-${index}`)}
+								<li>
+									<strong class="item-name">{item.name}</strong>
+									<div class="item-tags" aria-label="Item classification">
+										<span class="badge rarity-badge" data-rarity={item.rarity}
+											>{item.rarityLabel}</span
+										>
+										<span class="badge kind-badge">{item.kind}</span>
+									</div>
+									{#if item.description}<p>{item.description}</p>{/if}
+									{#if item.effects.length}
+										<ul class="item-effects" aria-label="Effects">
+											{#each item.effects as effect}<li>{effect}</li>{/each}
+										</ul>
+									{/if}
+									<div class="item-value">
+										<span>Value</span><strong>{item.valueText}</strong>
+									</div>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			</details>
 		</div>
-	</details>
+	</aside>
 
 	<main class="stack play-main">
-		<article class="card room-card">
-			<div class="card-head">
-				<span class="eyebrow">Room {data.room.number}</span>
-			</div>
-			<h2>{data.room.title}</h2>
+		<article class="card room-card" aria-labelledby="room-title">
+			<div class="eyebrow">Room {data.room.number}</div>
+			<h1 id="room-title">{data.room.title}</h1>
 			<div
 				class:typing={roomPending || (data.room.entryId && activeStreams[data.room.entryId])}
 				class="prose-block"
@@ -420,20 +430,38 @@
 								{awaitingTurn.outcome.hpBefore} -&gt; {awaitingTurn.outcome.hpAfter}
 								({awaitingTurn.outcome.hpDelta >= 0 ? '+' : ''}{awaitingTurn.outcome.hpDelta})
 							</strong>
+							{#if awaitingTurn.outcome.maxHpDelta}
+								<span>Maximum vitality</span>
+								<strong>
+									{awaitingTurn.outcome.maxHpBefore} -&gt; {awaitingTurn.outcome.maxHpAfter}
+									(+{awaitingTurn.outcome.maxHpDelta})
+								</strong>
+							{/if}
 						</div>
 					</div>
-					{#if awaitingTurn.outcome.rewards?.length}
+					{#if awaitingTurn.rewardItems.length}
 						<div class="loot-result" aria-label="Discovered loot">
 							<div class="eyebrow">Discovered</div>
 							<ul>
-								{#each awaitingTurn.outcome.rewards as item}
+								{#each awaitingTurn.rewardItems as item}
 									<li>
-										<strong>{item.name}</strong>
-										<span>
-											{item.kind === 'draught'
-												? 'Consumed immediately for healing'
-												: 'Added to inventory'}
-										</span>
+										<strong class="item-name">{item.name}</strong>
+										<div class="item-tags">
+											<span class="badge rarity-badge" data-rarity={item.rarity}
+												>{item.rarityLabel}</span
+											>
+											<span class="badge kind-badge">{item.kind}</span>
+										</div>
+										{#if item.description}<p>{item.description}</p>{/if}
+										{#if item.effects.length}
+											<ul class="item-effects" aria-label="Effects">
+												{#each item.effects as effect}<li>{effect}</li>{/each}
+											</ul>
+										{/if}
+										<div class="item-value">
+											<span>{item.consumed ? 'Use' : 'Value'}</span>
+											<strong>{item.valueText}</strong>
+										</div>
 									</li>
 								{/each}
 							</ul>
@@ -538,6 +566,10 @@
 					<p class="terminal-outcome">
 						<b>OUTCOME</b>
 						{event.outcome.message} / HP {event.outcome.hpBefore} -&gt; {event.outcome.hpAfter}
+						{#if event.outcome.maxHpDelta}
+							/ MAX HP {event.outcome.maxHpBefore} -&gt; {event.outcome.maxHpAfter}
+							(+{event.outcome.maxHpDelta})
+						{/if}
 					</p>
 					{#each event.rolls as roll}
 						<div class="terminal-roll {roll.success ? 'success' : 'failure'}">

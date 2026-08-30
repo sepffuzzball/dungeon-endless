@@ -28,7 +28,6 @@ export const load: PageServerLoad = async (event) => {
 			level: row.level,
 			hp: 0,
 			maxHp: 0,
-			defense: 5 + row.level,
 			inventory: []
 		};
 		const stats = deriveStats(input);

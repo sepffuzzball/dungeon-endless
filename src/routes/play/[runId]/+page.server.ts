@@ -43,6 +43,7 @@ import {
 	suggestActions
 } from '$lib/server/llm';
 import { logLlmFallback, type LlmFallbackInput } from '$lib/server/llm-diagnostics';
+import { toInventoryView } from '$lib/server/inventory-view';
 import { buildSystemPrompt } from '$lib/server/prompts';
 import {
 	achievements,
@@ -383,7 +384,6 @@ export const load: PageServerLoad = async (event) => {
 		level,
 		hp: owned.run.hp,
 		maxHp: owned.run.maxHp,
-		defense: 5 + level,
 		inventory: owned.run.inventory
 	});
 	const breakdowns = deriveStatBreakdowns({
@@ -393,7 +393,6 @@ export const load: PageServerLoad = async (event) => {
 		level,
 		hp: owned.run.hp,
 		maxHp: owned.run.maxHp,
-		defense: 5 + level,
 		inventory: owned.run.inventory
 	});
 
@@ -514,10 +513,13 @@ export const load: PageServerLoad = async (event) => {
 						narration: currentTurn.narration || currentTurn.outcome.message,
 						status: currentTurn.narrationStatus,
 						outcome: currentTurn.outcome,
+						rewardItems: toInventoryView(currentTurn.outcome.rewards, {
+							consumedDraughts: true
+						}),
 						rolls: Array.isArray(currentTurn.rolls) ? currentTurn.rolls : []
 					}
 				: null,
-		inventory: owned.run.inventory,
+		inventory: toInventoryView(owned.run.inventory),
 		summary: owned.run.summary,
 		characterName: owned.character.name,
 		companyGold: Number(account?.companyGold ?? 0)
@@ -663,12 +665,14 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 				const intent = { method: 'none' as const, advantage: 0, narrationMode: mode };
 				let inventory = run.inventory;
 				let hpAfter = run.hp;
+				let maxHpAfter = run.maxHp;
 				let outcome;
 				if (mode === 'loot_search') {
 					const loot = drawEncounterLoot(run.roomData, run.seed, run.roomNumber);
 					const applied = applyLoot(run.inventory, run.hp, run.maxHp, loot);
 					inventory = applied.inventory;
 					hpAfter = applied.hpAfter;
+					maxHpAfter = applied.maxHpAfter;
 					const itemNames = loot.rewards.map((item) => item.name).join(', ');
 					const healing =
 						loot.consumedDraughtCount === 0
@@ -681,6 +685,9 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 						hpBefore: run.hp,
 						hpAfter,
 						hpDelta: applied.hpDelta,
+						maxHpBefore: run.maxHp,
+						maxHpAfter,
+						maxHpDelta: applied.maxHpDelta,
 						message: itemNames
 							? `You discover ${itemNames}.${healing}`
 							: 'The search turns up nothing worth carrying.',
@@ -693,6 +700,9 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 						hpBefore: run.hp,
 						hpAfter: run.hp,
 						hpDelta: 0,
+						maxHpBefore: run.maxHp,
+						maxHpAfter: run.maxHp,
+						maxHpDelta: 0,
 						message: prior.outcome.message,
 						...(prior.outcome.injury ? { injury: prior.outcome.injury } : {})
 					};
@@ -730,6 +740,7 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 					.set({
 						inventory,
 						hp: hpAfter,
+						maxHp: maxHpAfter,
 						version: sequence,
 						phase: 'awaiting_proceed',
 						summary
@@ -934,7 +945,12 @@ export const actions: Actions = {
 						return done({ kind: 'failure', status: 404, message: 'Company not found.' });
 
 					const sequence = run.version + 1;
-					const pooledRoom = ensureEncounterRewardPool(run.roomData, run.seed, run.roomNumber);
+					const pooledRoom = ensureEncounterRewardPool(
+						run.roomData,
+						run.seed,
+						run.roomNumber,
+						run.rulesVersion
+					);
 					const roomSnapshot = { ...structuredClone(pooledRoom), roomNumber: run.roomNumber };
 					if (pooledRoom !== run.roomData) {
 						await tx
@@ -955,7 +971,6 @@ export const actions: Actions = {
 						level,
 						hp: run.hp,
 						maxHp: run.maxHp,
-						defense: 5 + level,
 						inventory: run.inventory
 					});
 					const encounter = resolveEncounter({
@@ -1048,6 +1063,7 @@ export const actions: Actions = {
 							.update(runs)
 							.set({
 								hp: encounter.outcome.hpAfter,
+								maxHp: encounter.outcome.maxHpAfter ?? run.maxHp,
 								inventory,
 								version: sequence,
 								phase: nextPhase,
@@ -1251,6 +1267,7 @@ export const actions: Actions = {
 						seed: run.seed,
 						room: nextNumber,
 						turn: run.version,
+						rulesVersion: run.rulesVersion,
 						debauchery: run.debauchery,
 						monsters: monsterRows,
 						traps: trapRows
@@ -1354,12 +1371,7 @@ export const actions: Actions = {
 					.for('update');
 				if (!account) return { status: 404, message: 'Company not found.' };
 
-				const gold = abandonSettlementGold(
-					run.inventory,
-					run.seed,
-					run.roomNumber,
-					run.version
-				);
+				const gold = abandonSettlementGold(run.inventory, run.seed, run.roomNumber, run.version);
 				await tx
 					.update(characters)
 					.set({

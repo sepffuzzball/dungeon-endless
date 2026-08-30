@@ -6,6 +6,7 @@ import type {
 	TurnOutcome
 } from '$lib/types';
 import { normalizeNarrationMode } from './game';
+import { toInventoryViewItem } from './inventory-view';
 
 /*
  * Prompt composition. The brutality and debauchery constants are kept as flat
@@ -356,16 +357,21 @@ export function composeRoomEntry(input: RoomEntryPromptInput): ComposedPrompt {
 			spirit: input.character.stats.spirit
 		}
 	};
-	const inventory = input.inventory.slice(0, ROOM_ENTRY_LIMITS.inventoryItems).map((item) => ({
-		kind: item.kind,
-		name: bounded(item.name, ROOM_ENTRY_LIMITS.inventoryFieldChars),
-		...(item.description
-			? { description: bounded(item.description, ROOM_ENTRY_LIMITS.inventoryFieldChars) }
-			: {}),
-		...(item.stat ? { stat: item.stat } : {}),
-		...(item.skill ? { skill: item.skill } : {}),
-		...(item.value !== undefined ? { value: item.value } : {})
-	}));
+	const inventory = input.inventory.slice(0, ROOM_ENTRY_LIMITS.inventoryItems).map((raw) => {
+		const item = toInventoryViewItem(raw);
+		return {
+			kind: item.kind,
+			name: bounded(item.name, ROOM_ENTRY_LIMITS.inventoryFieldChars),
+			rarity: item.rarity,
+			rarityLabel: item.rarityLabel,
+			...(item.description
+				? { description: bounded(item.description, ROOM_ENTRY_LIMITS.inventoryFieldChars) }
+				: {}),
+			effects: item.effects.map((effect) => bounded(effect, ROOM_ENTRY_LIMITS.inventoryFieldChars)),
+			value: item.valueText,
+			...(item.valueNotation ? { valueNotation: item.valueNotation } : {})
+		};
+	});
 	const user = [
 		'Write the room entry prose for the adventurer first stepping into this room. Return prose only, with no heading or label, as one to two substantial atmospheric paragraphs of roughly 120 to 220 words, in the present tense, staying strictly within the brutality and debauchery directives.',
 		'Treat room.name as an encounter or content label, never as a physical destination; do not open with a phrase like "You step into <name>". Instead build a plausible chamber, habitat, or location suited to the room type and establish it with sensory detail.',

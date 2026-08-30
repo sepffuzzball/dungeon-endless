@@ -902,18 +902,19 @@ th {
 	position: sticky;
 	top: 1rem;
 }
-.run-panel > summary {
-	margin: -0.25rem 0 0.8rem;
-	color: var(--amber);
-	cursor: pointer;
-	font-weight: 700;
-}
 .room-card {
 	min-height: 0;
 	padding: clamp(1.4rem, 4vw, 2.5rem);
 	background:
 		radial-gradient(circle at 80% 10%, rgba(175, 106, 64, 0.15), transparent 20rem),
 		linear-gradient(155deg, #202936, #111822);
+}
+.room-card > .eyebrow {
+	margin-bottom: var(--space-1);
+}
+.room-card h1 {
+	margin-bottom: var(--space-4);
+	font-size: clamp(2rem, 4vw, 3.4rem);
 }
 .prose-block {
 	min-height: 12rem;
@@ -1054,21 +1055,53 @@ input:disabled {
 .run-facts dd:has(.stat-breakdown) {
 	width: 100%;
 }
-.inventory-head {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	margin-bottom: 0.65rem;
-}
-.inventory-head > span {
-	display: grid;
-	place-items: center;
-	min-width: 25px;
-	height: 25px;
+.inventory-disclosure {
+	margin-top: var(--space-3);
 	border: 1px solid var(--line);
-	border-radius: 50%;
+	border-radius: 12px;
+	background: rgba(7, 11, 17, 0.28);
+}
+.inventory-disclosure > summary {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	min-height: 44px;
+	padding: 0.65rem 0.75rem;
 	color: var(--amber);
-	font-size: 0.72rem;
+	cursor: pointer;
+	list-style-position: inside;
+	touch-action: manipulation;
+}
+.inventory-disclosure > summary::marker {
+	color: #a98a5b;
+}
+.inventory-disclosure > summary:focus-visible {
+	outline: 3px solid #f4c573;
+	outline-offset: 3px;
+	border-radius: 8px;
+}
+.inventory-summary-label {
+	font-family: 'Nodesto Caps Condensed', Georgia, 'Times New Roman', serif;
+	font-size: 1rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+.inventory-count {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 1.5rem;
+	height: 1.5rem;
+	margin-left: auto;
+	padding-inline: 0.4rem;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	color: #cfbea0;
+	font-size: 0.7rem;
+}
+.inventory-body {
+	padding: 0 0.65rem 0.65rem;
 }
 .inventory-empty {
 	padding: 0.8rem;
@@ -1080,23 +1113,39 @@ input:disabled {
 .inventory-list {
 	display: grid;
 	gap: 0.6rem;
+	max-height: min(35vh, 24rem);
 	margin: 0;
 	padding: 0;
+	overflow-y: auto;
+	scrollbar-color: #574932 transparent;
 	list-style: none;
 }
-.inventory-list li {
+.inventory-list > li {
+	min-width: 0;
 	padding: 0.75rem;
 	border: 1px solid var(--line);
 	border-radius: 11px;
 	background: rgba(6, 10, 15, 0.45);
 }
-.inventory-list li > div:first-child {
-	display: flex;
-	justify-content: space-between;
-	gap: 0.5rem;
-}
-.inventory-list li > div:first-child > strong {
+.item-name {
+	display: block;
 	min-width: 0;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+.item-tags {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	min-width: 0;
+	margin-top: 0.45rem;
+	flex-wrap: wrap;
+}
+.item-tags .badge {
+	flex: 0 0 auto;
+	white-space: nowrap;
+	overflow-wrap: normal;
+	word-break: normal;
 }
 .inventory-list p {
 	margin: 0.45rem 0;
@@ -1104,12 +1153,62 @@ input:disabled {
 	font-size: 0.74rem;
 	line-height: 1.45;
 }
-.item-meta {
-	display: flex;
-	gap: 0.5rem;
-	flex-wrap: wrap;
+.rarity-badge[data-rarity='uncommon'] {
+	color: #a9d3bc;
+	background: rgba(34, 83, 67, 0.4);
+}
+.rarity-badge[data-rarity='rare'] {
+	color: #a9c9ec;
+	background: rgba(35, 67, 105, 0.42);
+}
+.rarity-badge[data-rarity='very_rare'] {
+	color: #d7b8e4;
+	background: rgba(75, 43, 88, 0.48);
+}
+.rarity-badge[data-rarity='legendary'] {
+	color: #f2c77e;
+	background: rgba(134, 87, 32, 0.38);
+}
+.rarity-badge[data-rarity='artifact'] {
+	color: #f0ad9d;
+	background: rgba(116, 50, 58, 0.48);
+}
+.kind-badge {
+	color: #b8b5aa;
+	background: rgba(255, 255, 255, 0.035);
+}
+.item-effects {
+	display: grid;
+	gap: 0.15rem;
+	margin: 0.5rem 0 0;
+	padding: 0;
+	color: #d6c3a0;
+	font-size: 0.74rem;
+	line-height: 1.4;
+	list-style: none;
+}
+.item-effects li::before {
+	content: '+ ';
 	color: var(--amber);
-	font-size: 0.66rem;
+}
+.item-value {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--space-2);
+	margin-top: 0.55rem;
+	padding-top: 0.45rem;
+	border-top: 1px solid rgba(230, 190, 118, 0.1);
+	font-size: 0.72rem;
+}
+.item-value span {
+	color: var(--muted);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+.item-value strong {
+	color: var(--amber);
+	white-space: nowrap;
 }
 .action-card h2 {
 	margin-bottom: 1rem;
@@ -1184,24 +1283,23 @@ input:disabled {
 	border-radius: 12px;
 	background: linear-gradient(135deg, rgba(134, 87, 32, 0.2), rgba(7, 11, 17, 0.48));
 }
-.loot-result ul {
+.loot-result > ul {
 	display: grid;
 	gap: var(--space-2);
 	margin: 0;
 	padding: 0;
 	list-style: none;
 }
-.loot-result li {
-	display: flex;
-	justify-content: space-between;
-	gap: var(--space-3);
-	padding-top: var(--space-2);
+.loot-result > ul > li {
+	min-width: 0;
+	padding: var(--space-3);
 	border-top: 1px solid var(--line);
+	background: rgba(7, 11, 17, 0.24);
 }
-.loot-result li span {
-	color: var(--muted);
+.loot-result p {
+	margin: 0.5rem 0 0;
+	color: #aaa496;
 	font-size: 0.78rem;
-	text-align: right;
 }
 .proceed-form {
 	display: flex;
@@ -1713,14 +1811,8 @@ button,
 	.run-panel {
 		padding: 0.9rem;
 	}
-	.run-panel:not([open]) {
-		position: static;
-	}
-	.run-panel > summary {
-		margin: 0;
-	}
-	.run-panel[open] > summary {
-		margin-bottom: 0.8rem;
+	.inventory-list {
+		max-height: 20rem;
 	}
 	.terminal-scroll {
 		min-height: 220px;

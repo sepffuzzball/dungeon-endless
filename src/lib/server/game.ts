@@ -1,6 +1,8 @@
 import {
 	SKILLS,
 	type DerivedStats,
+	type ItemEffect,
+	type ItemRarity,
 	type InventoryItem,
 	type MonsterDefinition,
 	type RoomSnapshot,
@@ -11,7 +13,8 @@ import {
 	type TrapDefinition,
 	type TurnIntent,
 	type TurnOutcome,
-	type TurnNarrationMode
+	type TurnNarrationMode,
+	type ValueDice
 } from '$lib/types';
 import { createRng, rollCheck, type RollCheckResult, type Rng } from './rng';
 
@@ -106,8 +109,9 @@ export function provisionExpeditionLoot(seed: string, gearBonus: number): Invent
 		throw new RangeError(`Gear bonus must be an integer from 0 to ${MAX_GEAR_BONUS}.`);
 	}
 	const rng = createRng(seed, 0, 0, 'company-starting-loot');
-	return Array.from({ length: gearBonus }, () => ({
-		...(rng.range(0, 1) === 0 ? generateMagicItem(rng) : generateValuable(rng)),
+	const rarities: ItemRarity[] = ['common', 'uncommon', 'rare', 'very_rare'];
+	return rarities.slice(0, gearBonus + 1).map((rarity) => ({
+		...generateMagicItem(rng, rarity),
 		sellable: true,
 		source: 'starting'
 	}));
@@ -120,10 +124,7 @@ export function settlementGold(
 	version: number
 ): number {
 	const rng = createRng(seed, roomNumber, version, 'settlement');
-	return inventory.reduce(
-		(total, item) => total + (item.sellable === false ? 0 : sellValue(item, rng)),
-		0
-	);
+	return inventory.reduce((total, item) => total + sellValue(item, rng), 0);
 }
 
 /**
@@ -227,7 +228,6 @@ export function resolveRunBaseStats(
  * ------------------------------------------------------------------ */
 
 export const DEFAULT_GEAR_CAP = 5;
-const GEAR_BONUS_PER_ITEM = 1;
 
 export interface StatInput {
 	body: number;
@@ -236,7 +236,6 @@ export interface StatInput {
 	level: number;
 	hp: number;
 	maxHp: number;
-	defense: number;
 	inventory?: readonly InventoryItem[];
 	gearCap?: number;
 }
@@ -249,34 +248,36 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 	let attackBonus = 0;
 	let defenseBonus = 0;
 
-	for (const item of input.inventory ?? []) {
+	for (const rawItem of input.inventory ?? []) {
+		const item = normalizeInventoryItem(rawItem);
 		if (item.kind !== 'magic') continue;
-		switch (item.stat) {
-			case 'body':
-				matchingBonus.body += GEAR_BONUS_PER_ITEM;
-				break;
-			case 'mind':
-				matchingBonus.mind += GEAR_BONUS_PER_ITEM;
-				break;
-			case 'spirit':
-				matchingBonus.spirit += GEAR_BONUS_PER_ITEM;
-				break;
-			case 'general':
-				generalBonus.body += GEAR_BONUS_PER_ITEM;
-				generalBonus.mind += GEAR_BONUS_PER_ITEM;
-				generalBonus.spirit += GEAR_BONUS_PER_ITEM;
-				break;
-			case 'skill':
-				if (item.skill)
-					skillBonus[item.skill] = (skillBonus[item.skill] ?? 0) + GEAR_BONUS_PER_ITEM;
-				break;
-			case 'attack':
-				attackBonus += GEAR_BONUS_PER_ITEM;
-				break;
-			case 'defense':
-				defenseBonus += GEAR_BONUS_PER_ITEM;
-				break;
-		}
+		for (const effect of item.effects ?? [])
+			switch (effect.target) {
+				case 'body':
+					matchingBonus.body += effect.amount;
+					break;
+				case 'mind':
+					matchingBonus.mind += effect.amount;
+					break;
+				case 'spirit':
+					matchingBonus.spirit += effect.amount;
+					break;
+				case 'general':
+					generalBonus.body += effect.amount;
+					generalBonus.mind += effect.amount;
+					generalBonus.spirit += effect.amount;
+					break;
+				case 'skill':
+					if (effect.skill)
+						skillBonus[effect.skill] = (skillBonus[effect.skill] ?? 0) + effect.amount;
+					break;
+				case 'attack':
+					attackBonus += effect.amount;
+					break;
+				case 'defense':
+					defenseBonus += effect.amount;
+					break;
+			}
 	}
 
 	const effectivePrimary = (stat: PrimaryStat): number =>
@@ -298,7 +299,7 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 		spirit,
 		instinct: body + mind + spirit,
 		hp: input.hp,
-		defense: input.defense + defenseBonus,
+		defense: 5 + body + defenseBonus,
 		attackBonus: body + mind + spirit + attackBonus,
 		skillValues
 	};
@@ -337,7 +338,6 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 			]
 		};
 	}
-	const defenseBase = input.defense - input.level;
 	return {
 		stats,
 		breakdowns: {
@@ -358,10 +358,11 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 				label: 'Defense',
 				total: stats.defense,
 				parts: [
-					{ label: 'Base', value: defenseBase },
-					{ label: 'Level', value: input.level },
+					{ label: 'Base', value: 5 },
+					{ label: 'Effective Body', value: body },
 					{ label: 'Defense equipment', value: defenseBonus }
-				]
+				],
+				formula: '5 + Effective Body + Defense equipment'
 			},
 			attack: {
 				label: 'Attack',
@@ -386,6 +387,111 @@ export function deriveStats(input: StatInput): DerivedStats {
 /** Explanations produced by the same calculation as deriveStats. */
 export function deriveStatBreakdowns(input: StatInput): StatBreakdowns {
 	return deriveStatResult(input).breakdowns;
+}
+
+const ITEM_RARITIES: readonly ItemRarity[] = [
+	'common',
+	'uncommon',
+	'rare',
+	'very_rare',
+	'legendary',
+	'artifact'
+];
+const MAGIC_TARGETS = ['attack', 'defense', 'body', 'mind', 'spirit', 'general', 'skill'] as const;
+
+function validRarity(value: unknown): value is ItemRarity {
+	return typeof value === 'string' && ITEM_RARITIES.includes(value as ItemRarity);
+}
+
+function normalizeEffect(value: unknown): ItemEffect | null {
+	if (!value || typeof value !== 'object') return null;
+	const candidate = value as { target?: unknown; skill?: unknown; amount?: unknown };
+	if (!MAGIC_TARGETS.includes(candidate.target as (typeof MAGIC_TARGETS)[number])) return null;
+	if (typeof candidate.amount !== 'number' || !Number.isInteger(candidate.amount)) return null;
+	if (candidate.amount < 1 || candidate.amount > 10) return null;
+	if (candidate.target === 'skill') {
+		if (typeof candidate.skill !== 'string' || !SKILLS.includes(candidate.skill as SkillName))
+			return null;
+		return {
+			target: 'skill',
+			skill: candidate.skill as SkillName,
+			amount: candidate.amount
+		};
+	}
+	return {
+		target: candidate.target as Exclude<ItemEffect['target'], 'skill'>,
+		amount: candidate.amount
+	};
+}
+
+function normalizeDice(value: unknown): ValueDice | null {
+	if (!value || typeof value !== 'object') return null;
+	const dice = value as Partial<ValueDice>;
+	return Number.isSafeInteger(dice.count) &&
+		(dice.count ?? 0) >= 1 &&
+		(dice.count ?? 0) <= 20 &&
+		Number.isSafeInteger(dice.sides) &&
+		(dice.sides ?? 0) >= 2 &&
+		(dice.sides ?? 0) <= 100
+		? { count: dice.count as number, sides: dice.sides as number }
+		: null;
+}
+
+/**
+ * Returns a safe, newly allocated view of an inventory item. It never mutates
+ * the persisted JSON object and callers need not write its compatibility
+ * defaults back to storage.
+ */
+export function normalizeInventoryItem(item: InventoryItem): InventoryItem {
+	const rarity = validRarity(item.rarity) ? item.rarity : 'common';
+	const explicitEffects = Array.isArray(item.effects)
+		? item.effects.map(normalizeEffect).filter((effect): effect is ItemEffect => effect !== null)
+		: [];
+	let effects = explicitEffects;
+	if (effects.length === 0 && item.kind === 'magic' && MAGIC_TARGETS.includes(item.stat as never)) {
+		const legacy = normalizeEffect({ target: item.stat, skill: item.skill, amount: 1 });
+		effects = legacy ? [legacy] : [];
+	}
+	const fixedValue =
+		Number.isSafeInteger(item.value) && (item.value as number) >= 0 ? item.value : undefined;
+	const explicitDice = normalizeDice(item.valueDice);
+	const fallbackDice =
+		item.kind === 'magic'
+			? { count: 1, sides: 2 }
+			: item.kind === 'valuable'
+				? { count: 1, sides: 6 }
+				: undefined;
+	return {
+		...item,
+		rarity,
+		effects: effects.map((effect) => ({ ...effect })),
+		...(fixedValue !== undefined ? { value: fixedValue } : { value: undefined }),
+		valueDice: fixedValue !== undefined ? undefined : (explicitDice ?? fallbackDice),
+		...(item.kind === 'draught'
+			? {
+					healAmount:
+						Number.isInteger(item.healAmount) && (item.healAmount ?? 0) >= 0 ? item.healAmount : 1,
+					overhealToMaxHp: item.overhealToMaxHp === true,
+					maxHpIncrease:
+						Number.isInteger(item.maxHpIncrease) && (item.maxHpIncrease ?? 0) >= 0
+							? item.maxHpIncrease
+							: 0,
+					fullHeal: item.fullHeal === true
+				}
+			: {})
+	};
+}
+
+export function formatDice(dice: ValueDice): string {
+	return `${dice.count}d${dice.sides}`;
+}
+
+export function formatItemEffects(effects: readonly ItemEffect[]): string {
+	return effects
+		.map(
+			(effect) => `${effect.target === 'skill' ? effect.skill : effect.target} +${effect.amount}`
+		)
+		.join(', ');
 }
 
 /* ------------------------------------------------------------------ *
@@ -439,64 +545,189 @@ function valuableName(rng: Rng): string {
 	return `Gilded ${rng.pick(VALUABLE_FORMS)}`;
 }
 
-const MAGIC_STATS: Array<InventoryItem['stat']> = [
-	'attack',
-	'defense',
-	'body',
-	'mind',
-	'spirit',
-	'skill'
-];
+function pickTwo<T>(rng: Rng, choices: readonly T[]): [T, T] {
+	const first = rng.range(0, choices.length - 1);
+	let second = rng.range(0, choices.length - 2);
+	if (second >= first) second += 1;
+	return [choices[first], choices[second]];
+}
 
-function generateMagicItem(rng: Rng): InventoryItem {
-	const stat = rng.pick(MAGIC_STATS);
-	const item: InventoryItem = { kind: 'magic', name: magicItemName(rng), stat };
-	if (stat === 'skill') item.skill = rng.pick(SKILLS);
-	if (stat === 'body' || stat === 'mind' || stat === 'spirit' || stat === 'general') {
-		item.description = `Boosts your ${stat} while carried.`;
-	} else if (stat === 'attack' || stat === 'defense') {
-		item.description = `Boosts your ${stat} while carried.`;
-	} else if (stat === 'skill' && item.skill) {
-		item.description = `Boosts your ${item.skill} while carried.`;
+function effect(target: Exclude<ItemEffect['target'], 'skill'>, amount: number): ItemEffect;
+function effect(target: 'skill', amount: number, skill: SkillName): ItemEffect;
+function effect(target: ItemEffect['target'], amount: number, skill?: SkillName): ItemEffect {
+	return target === 'skill' ? { target, skill: skill as SkillName, amount } : { target, amount };
+}
+
+export function generateMagicItem(rng: Rng, rarity: ItemRarity = 'common'): InventoryItem {
+	let effects: ItemEffect[];
+	switch (rarity) {
+		case 'common': {
+			const choice = rng.range(0, SKILLS.length);
+			effects =
+				choice === SKILLS.length ? [effect('defense', 1)] : [effect('skill', 1, SKILLS[choice])];
+			break;
+		}
+		case 'uncommon':
+			effects = [effect(rng.pick(['attack', 'body', 'mind', 'spirit'] as const), 1)];
+			break;
+		case 'rare':
+			effects = pickTwo(rng, [
+				effect('attack', 1),
+				effect('defense', 2),
+				effect('body', 1),
+				effect('mind', 1),
+				effect('spirit', 1)
+			]);
+			break;
+		case 'very_rare':
+			effects = [effect('attack', 2), effect(rng.pick(['body', 'mind', 'defense'] as const), 1)];
+			break;
+		case 'legendary':
+			effects = pickTwo(rng, [
+				effect('attack', 3),
+				effect('defense', 3),
+				effect('body', 2),
+				effect('mind', 2),
+				effect('spirit', 2)
+			]);
+			break;
+		case 'artifact':
+			effects = [
+				effect('body', 1),
+				effect('mind', 1),
+				effect('spirit', 1),
+				effect('attack', 3),
+				effect('defense', 3)
+			];
+	}
+	const rank = ITEM_RARITIES.indexOf(rarity);
+	const valueDice = { count: [1, 2, 2, 2, 3, 4][rank], sides: [2, 2, 4, 6, 8, 10][rank] };
+	return {
+		kind: 'magic',
+		name: magicItemName(rng),
+		rarity,
+		effects,
+		valueDice,
+		description: `While carried: ${formatItemEffects(effects)}.`
+	};
+}
+
+export function generateDraught(rng: Rng, rarity: ItemRarity = 'common'): InventoryItem {
+	const rank = ITEM_RARITIES.indexOf(rarity);
+	const item: InventoryItem = { kind: 'draught', name: draughtName(rng), rarity, value: 0 };
+	if (rank <= 3) {
+		item.healAmount = rank + 1;
+		item.overhealToMaxHp = true;
+		item.description = `Restores ${rank + 1} vitality; excess healing becomes maximum HP.`;
+	} else {
+		item.maxHpIncrease = rank === 4 ? 4 : 5;
+		item.fullHeal = true;
+		item.description = `Raises maximum HP by ${item.maxHpIncrease} and fully heals.`;
 	}
 	return item;
 }
 
-function generateDraught(rng: Rng): InventoryItem {
-	return { kind: 'draught', name: draughtName(rng), description: 'An immediate healing draught.' };
+export function generateValuable(rng: Rng, rarity: ItemRarity = 'common'): InventoryItem {
+	const valueDice = { count: ITEM_RARITIES.indexOf(rarity) + 1, sides: 6 };
+	return {
+		kind: 'valuable',
+		name: valuableName(rng),
+		rarity,
+		valueDice,
+		description: `Sells at settlement for ${formatDice(valueDice)} gold.`
+	};
 }
 
-function generateValuable(rng: Rng): InventoryItem {
-	return { kind: 'valuable', name: valuableName(rng), description: 'Sells at settlement.' };
+const RARITY_WEIGHTS: readonly { maxDepth: number; weights: readonly number[] }[] = [
+	{ maxDepth: 4, weights: [70, 25, 5, 0, 0, 0] },
+	{ maxDepth: 9, weights: [55, 30, 12, 3, 0, 0] },
+	{ maxDepth: 19, weights: [40, 30, 20, 8, 2, 0] },
+	{ maxDepth: 34, weights: [25, 30, 25, 14, 5, 1] },
+	{ maxDepth: 49, weights: [15, 25, 25, 20, 12, 3] },
+	{ maxDepth: Number.POSITIVE_INFINITY, weights: [10, 20, 25, 22, 16, 7] }
+];
+
+export function selectLootRarity(rng: Rng, depth: number): ItemRarity {
+	const table = RARITY_WEIGHTS.find((entry) => depth <= entry.maxDepth) ?? RARITY_WEIGHTS[0];
+	return rng.weighted(
+		ITEM_RARITIES.map((rarity, index) => ({ kind: rarity, weight: table.weights[index] }))
+	).kind;
 }
 
-/** Builds a reward pool split into equal thirds: magic, draught, valuable. */
-export function generateRewardPool(rng: Rng, size = 3): InventoryItem[] {
+export const selectItemRarity = selectLootRarity;
+
+/** Retained rules-version-1/2 generator with the original item shapes and RNG draws. */
+function generateLegacyRewardPool(rng: Rng, size: number): InventoryItem[] {
+	const stats: Array<InventoryItem['stat']> = [
+		'attack',
+		'defense',
+		'body',
+		'mind',
+		'spirit',
+		'skill'
+	];
+	const magic = (): InventoryItem => {
+		const stat = rng.pick(stats);
+		const item: InventoryItem = { kind: 'magic', name: magicItemName(rng), stat };
+		if (stat === 'skill') item.skill = rng.pick(SKILLS);
+		item.description = `Boosts your ${stat === 'skill' ? item.skill : stat} while carried.`;
+		return item;
+	};
 	const third = Math.floor(size / 3);
-	const pool: InventoryItem[] = [];
-	for (let i = 0; i < third; i++) pool.push(generateMagicItem(rng));
-	for (let i = 0; i < third; i++) pool.push(generateDraught(rng));
-	for (let i = 0; i < size - third * 2; i++) pool.push(generateValuable(rng));
-	// Deterministic Fisher-Yates shuffle.
+	const pool = [
+		...Array.from({ length: third }, magic),
+		...Array.from({ length: third }, () => ({
+			kind: 'draught' as const,
+			name: draughtName(rng),
+			description: 'An immediate healing draught.'
+		})),
+		...Array.from({ length: size - third * 2 }, () => ({
+			kind: 'valuable' as const,
+			name: valuableName(rng),
+			description: 'Sells at settlement.'
+		}))
+	];
+	return shufflePool(pool, rng);
+}
+
+function shufflePool(pool: InventoryItem[], rng: Rng): InventoryItem[] {
 	for (let i = pool.length - 1; i > 0; i--) {
 		const j = rng.range(0, i);
-		const tmp = pool[i];
-		pool[i] = pool[j];
-		pool[j] = tmp;
+		[pool[i], pool[j]] = [pool[j], pool[i]];
 	}
 	return pool;
 }
 
-/** Gold a settlement pays for an item; magic 1d2, valuable 1d6, draught none. */
+/** Builds a reward pool split into equal thirds: magic, draught, valuable. */
+export function generateRewardPool(
+	rng: Rng,
+	size = 3,
+	depth = 1,
+	rulesVersion = 3
+): InventoryItem[] {
+	if (rulesVersion < 3) return generateLegacyRewardPool(rng, size);
+	const third = Math.floor(size / 3);
+	const pool: InventoryItem[] = [];
+	for (let i = 0; i < third; i++) pool.push(generateMagicItem(rng, selectLootRarity(rng, depth)));
+	for (let i = 0; i < third; i++) pool.push(generateDraught(rng, selectLootRarity(rng, depth)));
+	for (let i = 0; i < size - third * 2; i++)
+		pool.push(generateValuable(rng, selectLootRarity(rng, depth)));
+	return shufflePool(pool, rng);
+}
+
+/** Gold a settlement pays without consuming RNG for unsellable or fixed-value items. */
 export function sellValue(item: InventoryItem, rng: Rng): number {
-	switch (item.kind) {
-		case 'magic':
-			return rng.range(1, 2);
-		case 'valuable':
-			return rng.range(1, 6);
-		case 'draught':
-			return 0;
-	}
+	if (item.sellable === false) return 0;
+	// Draughts are consumed immediately and never sell; return before any value
+	// or valueDice is considered so no RNG draw is consumed for them.
+	if (item.kind === 'draught') return 0;
+	const normalized = normalizeInventoryItem(item);
+	if (normalized.value !== undefined) return normalized.value;
+	if (!normalized.valueDice) return 0;
+	let total = 0;
+	for (let i = 0; i < normalized.valueDice.count; i++)
+		total += rng.range(1, normalized.valueDice.sides);
+	return total;
 }
 
 /* ------------------------------------------------------------------ *
@@ -607,6 +838,7 @@ export interface GenerateRoomInput {
 	seed: string;
 	room: number;
 	turn: number;
+	rulesVersion?: number;
 	debauchery?: number;
 	monsters: readonly MonsterDefinition[];
 	traps: readonly TrapDefinition[];
@@ -619,19 +851,21 @@ export function normalizeNarrationMode(mode?: TurnNarrationMode): TurnNarrationM
 
 /**
  * Materializes the authoritative reward pool for encounter rooms. Existing
- * non-empty pools are returned by reference so snapshots are never rerolled.
+ * reward arrays, including empty arrays, are returned by reference so saved
+ * snapshots are never rerolled.
  */
 export function ensureEncounterRewardPool(
 	room: RoomSnapshot,
 	seed: string,
-	roomNumber: number
+	roomNumber: number,
+	rulesVersion = 3
 ): RoomSnapshot {
-	if (!['monster', 'trap', 'boss'].includes(room.type) || (room.rewards?.length ?? 0) > 0) {
+	if (!['monster', 'trap', 'boss'].includes(room.type) || room.rewards !== undefined) {
 		return room;
 	}
 	const size = room.type === 'boss' ? BOSS_REWARD_POOL_SIZE : TREASURE_REWARD_POOL_SIZE;
 	const rng = createRng(seed, roomNumber, 0, `${ENCOUNTER_REWARD_POOL_PURPOSE}:${room.type}`);
-	return { ...room, rewards: generateRewardPool(rng, size) };
+	return { ...room, rewards: generateRewardPool(rng, size, roomNumber, rulesVersion) };
 }
 
 export interface EncounterLootDraw {
@@ -675,9 +909,11 @@ export interface AppliedLoot {
 	inventory: InventoryItem[];
 	hpAfter: number;
 	hpDelta: number;
+	maxHpAfter: number;
+	maxHpDelta: number;
 }
 
-/** Applies an authoritative draw: gear is carried and each draught heals one HP. */
+/** Applies carried loot and consumed draught objects in their authoritative draw order. */
 export function applyLoot(
 	inventory: readonly InventoryItem[],
 	hp: number,
@@ -685,12 +921,39 @@ export function applyLoot(
 	loot: {
 		carriedRewards?: readonly InventoryItem[];
 		carried?: readonly InventoryItem[];
-		consumedDraughtCount: number;
+		consumedDraughts?: readonly InventoryItem[];
+		/** Legacy compatibility only; represents heal-one draughts. */
+		consumedDraughtCount?: number;
 	}
 ): AppliedLoot {
-	const hpAfter = Math.min(maxHp, hp + loot.consumedDraughtCount * DRAUGHT_HEAL);
+	let hpAfter = hp;
+	let maxHpAfter = maxHp;
+	const draughts =
+		loot.consumedDraughts ??
+		Array.from({ length: loot.consumedDraughtCount ?? 0 }, () => ({
+			kind: 'draught' as const,
+			name: 'Legacy draught'
+		}));
+	for (const raw of draughts) {
+		if (raw.kind !== 'draught') continue;
+		const draught = normalizeInventoryItem(raw);
+		maxHpAfter += draught.maxHpIncrease ?? 0;
+		if (draught.fullHeal) {
+			hpAfter = maxHpAfter;
+			continue;
+		}
+		const healed = hpAfter + (draught.healAmount ?? DRAUGHT_HEAL);
+		if (draught.overhealToMaxHp && healed > maxHpAfter) maxHpAfter += healed - maxHpAfter;
+		hpAfter = Math.min(maxHpAfter, healed);
+	}
 	const carried = loot.carriedRewards ?? loot.carried ?? [];
-	return { inventory: [...inventory, ...carried], hpAfter, hpDelta: hpAfter - hp };
+	return {
+		inventory: [...inventory, ...carried],
+		hpAfter,
+		hpDelta: hpAfter - hp,
+		maxHpAfter,
+		maxHpDelta: maxHpAfter - maxHp
+	};
 }
 
 /** Normalizes old outcomes whose rewards represented both carried and consumed items. */
@@ -743,7 +1006,8 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 				defense: monster.defense + BOSS_TARGET_BONUS
 			},
 			input.seed,
-			input.room
+			input.room,
+			input.rulesVersion ?? 3
 		);
 	}
 
@@ -764,7 +1028,8 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 					defense: monster.defense
 				},
 				input.seed,
-				input.room
+				input.room,
+				input.rulesVersion ?? 3
 			);
 		}
 		case 'trap': {
@@ -778,7 +1043,8 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 					skill: trap.skill
 				},
 				input.seed,
-				input.room
+				input.room,
+				input.rulesVersion ?? 3
 			);
 		}
 		case 'treasure':
@@ -786,7 +1052,12 @@ export function generateRoom(input: GenerateRoomInput): RoomSnapshot {
 				type: 'treasure',
 				name: 'Hidden Hoard',
 				description: 'A promising cache of goods waits to be claimed.',
-				rewards: generateRewardPool(rng, TREASURE_REWARD_POOL_SIZE)
+				rewards: generateRewardPool(
+					rng,
+					TREASURE_REWARD_POOL_SIZE,
+					input.room,
+					input.rulesVersion ?? 3
+				)
 			};
 		case 'rest':
 			return {
@@ -955,22 +1226,18 @@ function drawImmediateRewards(
 	pool: InventoryItem[],
 	count: number,
 	rng: Rng,
-	hpAfter: number,
+	hp: number,
 	maxHp: number
 ) {
 	const drawn: InventoryItem[] = [];
-	const carried: InventoryItem[] = [];
 	for (let i = 0; i < count && pool.length > 0; i++) {
 		const index = rng.range(0, pool.length - 1);
-		const item = pool.splice(index, 1)[0];
-		drawn.push(item);
-		if (item.kind === 'draught') {
-			hpAfter = Math.min(maxHp, hpAfter + DRAUGHT_HEAL);
-		} else {
-			carried.push(item);
-		}
+		drawn.push(pool.splice(index, 1)[0]);
 	}
-	return { drawn, carried, hpAfter };
+	const carried = drawn.filter((item) => item.kind !== 'draught');
+	const consumedDraughts = drawn.filter((item) => item.kind === 'draught');
+	const applied = applyLoot([], hp, maxHp, { carried, consumedDraughts });
+	return { drawn, carried, ...applied };
 }
 
 /**
@@ -986,6 +1253,7 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 
 	const hpBefore = hp;
 	let hpAfter = hp;
+	let maxHpAfter = maxHp;
 	let result: TurnOutcome['result'] = 'success';
 	let message = '';
 	let rewards: InventoryItem[] = [];
@@ -1071,6 +1339,7 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 			rewards = drawn.drawn;
 			carriedRewards = drawn.carried;
 			hpAfter = drawn.hpAfter;
+			maxHpAfter = drawn.maxHpAfter;
 			result = 'reward';
 			message = `You claim the ${room.name ?? 'hidden hoard'}.`;
 			break;
@@ -1093,6 +1362,9 @@ export function resolveEncounter(input: EncounterInput): EncounterResult {
 		hpBefore,
 		hpAfter,
 		hpDelta: hpAfter - hpBefore,
+		maxHpBefore: maxHp,
+		maxHpAfter,
+		maxHpDelta: maxHpAfter - maxHp,
 		message,
 		...(rewards.length > 0 ? { rewards } : {}),
 		...(rewards.length > 0 ? { carriedRewards } : {}),

@@ -610,7 +610,6 @@ export const GET: RequestHandler = async (event) => {
 							level,
 							hp: run.hp,
 							maxHp: run.maxHp,
-							defense: 5 + level,
 							inventory: run.inventory
 						});
 						for await (const chunk of streamRoomEntry({

@@ -189,11 +189,29 @@ export interface RoomEntry {
 }
 
 export type MagicStat = 'attack' | 'defense' | 'body' | 'mind' | 'spirit' | 'skill' | 'general';
+export type ItemRarity = 'common' | 'uncommon' | 'rare' | 'very_rare' | 'legendary' | 'artifact';
+
+export type ItemEffect =
+	| { target: 'skill'; skill: SkillName; amount: number }
+	| { target: Exclude<MagicStat, 'skill'>; skill?: never; amount: number };
+
+export interface ValueDice {
+	count: number;
+	sides: number;
+}
 
 export interface InventoryItem {
 	kind: 'magic' | 'draught' | 'valuable';
 	name: string;
 	description?: string;
+	rarity?: ItemRarity;
+	effects?: ItemEffect[];
+	valueDice?: ValueDice;
+	/** Draught vitality fields. Missing fields retain legacy heal-one behavior. */
+	healAmount?: number;
+	overhealToMaxHp?: boolean;
+	maxHpIncrease?: number;
+	fullHeal?: boolean;
 	stat?: MagicStat;
 	skill?: SkillName;
 	value?: number;
@@ -201,6 +219,20 @@ export interface InventoryItem {
 	sellable?: boolean;
 	/** Identifies loot granted at expedition start; used to block immediate-abandon farming. */
 	source?: 'starting';
+}
+
+/** Normalized, display-only inventory data. Persisted item rules stay server-side. */
+export interface InventoryViewItem {
+	kind: InventoryItem['kind'];
+	name: string;
+	description: string;
+	rarity: ItemRarity;
+	rarityLabel: string;
+	effects: string[];
+	valueText: string;
+	valueNotation: string | null;
+	sellable: boolean;
+	consumed: boolean;
 }
 
 export interface RollRecord {
@@ -230,6 +262,10 @@ export interface TurnOutcome {
 	hpBefore: number;
 	hpAfter: number;
 	hpDelta: number;
+	/** Optional on legacy outcomes that predate vitality-changing draughts. */
+	maxHpBefore?: number;
+	maxHpAfter?: number;
+	maxHpDelta?: number;
 	message: string;
 	/** Every discovered item, including draughts consumed immediately. */
 	rewards?: InventoryItem[];
@@ -369,6 +405,7 @@ export interface AwaitingProceedTurn {
 	narration: string;
 	status: NarrationStatus;
 	outcome: TurnOutcome;
+	rewardItems: InventoryViewItem[];
 	rolls: RollRecord[];
 }
 
@@ -464,7 +501,7 @@ export interface PlayView {
 	proceedKey: string;
 	followupKey: string;
 	awaitingTurn: AwaitingProceedTurn | null;
-	inventory: InventoryItem[];
+	inventory: InventoryViewItem[];
 	summary: string;
 	characterName: string;
 	companyGold: number;

@@ -136,6 +136,7 @@ export const actions: Actions = {
 					seed,
 					room: startRoom,
 					turn: 0,
+					rulesVersion: 3,
 					debauchery: account.debauchery,
 					monsters: monsterRows,
 					traps: trapRows
@@ -150,7 +151,7 @@ export const actions: Actions = {
 						status: 'active',
 						phase: 'ready',
 						seed,
-						rulesVersion: 2,
+						rulesVersion: 3,
 						roomNumber: startRoom,
 						version: 0,
 						hp: maxHp,

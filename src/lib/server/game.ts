@@ -100,13 +100,16 @@ export function canIncreaseStat(
 	return validateStatAllocation(level + 1, next.body, next.mind, next.spirit);
 }
 
-export function provisionPersistentGear(gearBonus: number): InventoryItem[] {
-	return Array.from({ length: gearBonus }, (_, index) => ({
-		kind: 'magic' as const,
-		name: `Company gear +${index + 1}`,
-		description: 'Persistent company equipment. It returns to the vault after the expedition.',
-		stat: 'general' as const,
-		sellable: false
+/** Generates the sellable loot granted at the start of one expedition. */
+export function provisionExpeditionLoot(seed: string, gearBonus: number): InventoryItem[] {
+	if (!Number.isInteger(gearBonus) || gearBonus < 0 || gearBonus > MAX_GEAR_BONUS) {
+		throw new RangeError(`Gear bonus must be an integer from 0 to ${MAX_GEAR_BONUS}.`);
+	}
+	const rng = createRng(seed, 0, 0, 'company-starting-loot');
+	return Array.from({ length: gearBonus }, () => ({
+		...(rng.range(0, 1) === 0 ? generateMagicItem(rng) : generateValuable(rng)),
+		sellable: true,
+		source: 'starting'
 	}));
 }
 
@@ -121,6 +124,23 @@ export function settlementGold(
 		(total, item) => total + (item.sellable === false ? 0 : sellValue(item, rng)),
 		0
 	);
+}
+
+/**
+ * Settlement gold for an abandoned run. Before any player turn has resolved
+ * (run version 0), loot granted at expedition start is excluded so an
+ * immediate abandon-and-restart cannot farm starting gold; other and later
+ * starting loot sells normally.
+ */
+export function abandonSettlementGold(
+	inventory: readonly InventoryItem[],
+	seed: string,
+	roomNumber: number,
+	version: number
+): number {
+	const sellable =
+		version === 0 ? inventory.filter((item) => item.source !== 'starting') : inventory;
+	return settlementGold(sellable, seed, roomNumber, version);
 }
 
 /** Maps each skill to the primary stat that governs it. */

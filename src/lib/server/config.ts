@@ -28,9 +28,9 @@ const configSchema = z.object({
 	SECURE_COOKIE: z.boolean().default(false),
 	ALLOW_INSECURE_LLM_URLS: z.boolean().default(false),
 	ALLOW_PRIVATE_LLM_URLS: z.boolean().default(false),
-	LLM_MAX_TOKENS: z.number().int().positive().default(600),
+	LLM_MAX_TOKENS: z.number().int().positive().default(1600),
 	LLM_TIMEOUT_MS: z.number().int().positive().default(20000),
-	LLM_MAX_RESPONSE_BYTES: z.number().int().positive().default(8192),
+	LLM_MAX_RESPONSE_BYTES: z.number().int().positive().default(262144),
 	LLM_DIAGNOSTICS: z.boolean().default(true),
 	BOOTSTRAP_ADMIN_USERNAME: z.string().optional(),
 	BOOTSTRAP_ADMIN_PASSWORD: z.string().optional()
@@ -47,9 +47,9 @@ function loadConfig(): Config {
 		SECURE_COOKIE: boolFromEnv(process.env.SECURE_COOKIE, false),
 		ALLOW_INSECURE_LLM_URLS: boolFromEnv(process.env.ALLOW_INSECURE_LLM_URLS, false),
 		ALLOW_PRIVATE_LLM_URLS: boolFromEnv(process.env.ALLOW_PRIVATE_LLM_URLS, false),
-		LLM_MAX_TOKENS: intFromEnv(process.env.LLM_MAX_TOKENS, 600),
+		LLM_MAX_TOKENS: intFromEnv(process.env.LLM_MAX_TOKENS, 1600),
 		LLM_TIMEOUT_MS: intFromEnv(process.env.LLM_TIMEOUT_MS, 20000),
-		LLM_MAX_RESPONSE_BYTES: intFromEnv(process.env.LLM_MAX_RESPONSE_BYTES, 8192),
+		LLM_MAX_RESPONSE_BYTES: intFromEnv(process.env.LLM_MAX_RESPONSE_BYTES, 262144),
 		LLM_DIAGNOSTICS: boolFromEnv(process.env.LLM_DIAGNOSTICS, true),
 		BOOTSTRAP_ADMIN_USERNAME: process.env.BOOTSTRAP_ADMIN_USERNAME,
 		BOOTSTRAP_ADMIN_PASSWORD: process.env.BOOTSTRAP_ADMIN_PASSWORD

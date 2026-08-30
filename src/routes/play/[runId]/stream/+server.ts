@@ -20,6 +20,7 @@ import {
 	logLlmFallback,
 	logLlmRouteError,
 	type LlmDiagnosticContext,
+	type LlmFallbackReason,
 	type LlmRouteErrorInput
 } from '$lib/server/llm-diagnostics';
 import {
@@ -30,6 +31,7 @@ import {
 } from '$lib/server/narration';
 import { buildSystemPrompt } from '$lib/server/prompts';
 import { characters, llmEndpoints, roomEntries, runs, turns } from '$lib/server/schema';
+import type { RollRecord, RoomSnapshot, TurnNarrationMode, TurnOutcome } from '$lib/types';
 import type { RequestHandler } from './$types';
 
 const uuidSchema = z.string().uuid();
@@ -37,6 +39,49 @@ const LEASE_MS = 30_000;
 const HEARTBEAT_MS = 8_000;
 const FOLLOWER_POLL_MS = 500;
 const OVERALL_WAIT_MS = 120_000;
+
+function requiresCompleteFallback(reason: LlmFallbackReason): boolean {
+	return (
+		reason === 'response_truncated' ||
+		reason === 'response_incomplete' ||
+		reason === 'response_too_large'
+	);
+}
+
+/** Selects the exact-count durable turn text after a stream failure. */
+export function _durableTurnNarrationAfterFailure(input: {
+	accumulated: string;
+	reason: LlmFallbackReason;
+	room: RoomSnapshot;
+	actionText: string;
+	outcome: TurnOutcome;
+	rolls: RollRecord[];
+	narrationMode: TurnNarrationMode;
+	brutality: number;
+	debauchery: number;
+}): string {
+	if (input.accumulated && !requiresCompleteFallback(input.reason)) return input.accumulated;
+	return fallbackProse(
+		input.room,
+		input.actionText,
+		input.outcome,
+		input.rolls,
+		input.narrationMode,
+		input.brutality,
+		input.debauchery
+	);
+}
+
+/** Selects complete durable room-entry text after a stream failure. */
+export function _durableRoomNarrationAfterFailure(input: {
+	accumulated: string;
+	reason: LlmFallbackReason;
+	room: RoomSnapshot;
+	runSummary: string;
+}): string {
+	if (input.accumulated && !requiresCompleteFallback(input.reason)) return input.accumulated;
+	return fallbackRoomEntry(input.room, input.runSummary);
+}
 
 export function _outerRouteDiagnostic(
 	kind: 'turn' | 'room',
@@ -460,6 +505,8 @@ export const GET: RequestHandler = async (event) => {
 							outcome: turn.outcome,
 							rolls: Array.isArray(turn.rolls) ? turn.rolls : [],
 							narrationMode,
+							brutality: owned.run.brutality,
+							debauchery: owned.run.debauchery,
 							endpoints,
 							signal,
 							diagnostics,
@@ -642,17 +689,19 @@ export const GET: RequestHandler = async (event) => {
 									normalizeNarrationMode(turn.intent.narrationMode)
 								)
 							: 'The dungeon falls silent.';
-						if (!accumulated) {
-							accumulated = turn
-								? fallbackProse(
-										turn.roomSnapshot,
-										turn.actionText,
-										turn.outcome,
-										Array.isArray(turn.rolls) ? turn.rolls : [],
-										normalizeNarrationMode(turn.intent.narrationMode)
-									)
-								: 'The dungeon falls silent.';
-						}
+						accumulated = turn
+							? _durableTurnNarrationAfterFailure({
+									accumulated,
+									reason: routeReason,
+									room: turn.roomSnapshot,
+									actionText: turn.actionText,
+									outcome: turn.outcome,
+									rolls: Array.isArray(turn.rolls) ? turn.rolls : [],
+									narrationMode: normalizeNarrationMode(turn.intent.narrationMode),
+									brutality: owned.run.brutality,
+									debauchery: owned.run.debauchery
+								})
+							: accumulated || 'The dungeon falls silent.';
 						const won = await finalizeTurnNarration({
 							runId: owned.run.id,
 							userId: user.id,
@@ -670,11 +719,14 @@ export const GET: RequestHandler = async (event) => {
 							.from(roomEntries)
 							.where(and(eq(roomEntries.id, targetId), eq(roomEntries.runId, owned.run.id)))
 							.limit(1);
-						if (!accumulated) {
-							accumulated = entry
-								? fallbackRoomEntry(entry.roomSnapshot, owned.run.summary)
-								: 'The chamber waits in silence.';
-						}
+						accumulated = entry
+							? _durableRoomNarrationAfterFailure({
+									accumulated,
+									reason: routeReason,
+									room: entry.roomSnapshot,
+									runSummary: owned.run.summary
+								})
+							: accumulated || 'The chamber waits in silence.';
 						saved = await db
 							.update(roomEntries)
 							.set({ prose: accumulated, status: 'failed', updatedAt: new Date() })

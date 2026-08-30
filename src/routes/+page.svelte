@@ -76,6 +76,12 @@
 							>{character.genderIdentity} &middot; {character.pronouns}</small
 						>
 						<small>{character.species} {character.className} / Level {character.level}</small>
+						<small class="text-muted"
+							>Starts each expedition with {character.gearBonus} random sellable loot {character.gearBonus ===
+							1
+								? 'item'
+								: 'items'}.</small
+						>
 					</div>
 					<div class="mini-stats">
 						<span><small>Body</small>{character.effectiveBody}</span><span

@@ -217,6 +217,9 @@ describe('classifyLlmFailure', () => {
 		expect(classifyLlmFailure(new LlmFailure('response_too_large', 'big'))).toBe(
 			'response_too_large'
 		);
+		expect(classifyLlmFailure(new LlmFailure('response_truncated', 'short'))).toBe(
+			'response_truncated'
+		);
 	});
 
 	it('maps abort errors to timeout', () => {

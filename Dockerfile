@@ -18,6 +18,8 @@ RUN DATABASE_URL=postgres://dungeon:dungeon@127.0.0.1:5432/dungeon \
 FROM node:22-alpine AS run
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV LLM_MAX_TOKENS=1600
+ENV LLM_MAX_RESPONSE_BYTES=262144
 WORKDIR /app
 
 # Runtime artifacts and the modules needed for migrate + bootstrap (includes devDeps).

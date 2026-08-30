@@ -25,6 +25,8 @@ export const LLM_FALLBACK_REASONS = [
 	'http_status',
 	'redirect_rejected',
 	'missing_body',
+	'response_truncated',
+	'response_incomplete',
 	'response_too_large',
 	'decoder_limit',
 	'url_or_dns_validation',

@@ -27,7 +27,8 @@ import {
 	composeRoomEntry,
 	composeSuggestions,
 	composeSummary,
-	delimit
+	delimit,
+	resolveNarrationParagraphTarget
 } from './prompts';
 import type { RoomEntryCharacterProfile } from './prompts';
 import {
@@ -76,6 +77,47 @@ export interface LlmCallOptions {
 	signal?: AbortSignal;
 	/** Receives cumulative stream metrics for fallback diagnostics; must never throw. */
 	onStats?: (stats: LlmStreamStats) => void;
+}
+
+/** OpenAI and compatible-server finish reasons that mean output hit a token cap. */
+function isTokenLimitFinishReason(value: unknown): boolean {
+	if (typeof value !== 'string') return false;
+	const normalized = value.trim().toLowerCase().replace(/[ -]+/g, '_');
+	return [
+		'length',
+		'max_length',
+		'max_length_reached',
+		'max_tokens',
+		'max_tokens_reached',
+		'max_output_tokens',
+		'max_output_tokens_reached',
+		'token_limit',
+		'token_limit_reached',
+		'token_limit_exceeded'
+	].includes(normalized);
+}
+
+/**
+ * Maps a finish reason that is not plain prose completion to a typed internal
+ * failure. Only null, absent and `stop` finish normally; token-limit reasons
+ * are truncation, and every other nonempty reason is incomplete.
+ */
+function finishReasonFailure(finishReason: unknown, stream: boolean): LlmFailure | null {
+	if (isTokenLimitFinishReason(finishReason)) {
+		return new LlmFailure(
+			'response_truncated',
+			stream
+				? 'Endpoint stream reached its token limit'
+				: 'Endpoint response reached its token limit'
+		);
+	}
+	if (finishReason !== undefined && finishReason !== null && finishReason !== 'stop') {
+		return new LlmFailure(
+			'response_incomplete',
+			stream ? 'Endpoint stream ended before completing' : 'Endpoint response ended before completing'
+		);
+	}
+	return null;
 }
 
 /** Reads at most `limit` bytes from a web stream, reporting truncation. */
@@ -204,8 +246,14 @@ export async function callChat(
 		} catch {
 			throw new LlmFailure('invalid_structured_response', 'Endpoint response was not valid JSON');
 		}
-		const content = (parsed as { choices?: Array<{ message?: { content?: unknown } }> })
-			?.choices?.[0]?.message?.content;
+		const choice = (
+			parsed as {
+				choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown } }>;
+			}
+		)?.choices?.[0];
+		const finishFailure = finishReasonFailure(choice?.finish_reason, false);
+		if (finishFailure) throw finishFailure;
+		const content = choice?.message?.content;
 		if (typeof content !== 'string') {
 			throw new LlmFailure(
 				'invalid_structured_response',
@@ -241,6 +289,7 @@ export interface SseEvent {
 export interface StreamChunk {
 	content: string;
 	done: boolean;
+	finishReason?: string;
 }
 
 const SSE_MAX_DECODE_BYTES = 1024 * 1024;
@@ -358,17 +407,29 @@ function decodeSseChunk(event: SseEvent): { chunk: StreamChunk; malformed: boole
 		return { chunk: { content: '', done: false }, malformed: true };
 	}
 	const record = choice as Record<string, unknown>;
+	const finishFailure = finishReasonFailure(record.finish_reason, true);
+	if (finishFailure) throw finishFailure;
+	const finishReason = typeof record.finish_reason === 'string' ? record.finish_reason : undefined;
 	const delta = record.delta;
 	if (delta && typeof delta === 'object' && !Array.isArray(delta)) {
 		const deltaRecord = delta as Record<string, unknown>;
 		if (typeof deltaRecord.content === 'string') {
-			return { chunk: { content: deltaRecord.content, done: false }, malformed: false };
+			return {
+				chunk: { content: deltaRecord.content, done: false, finishReason },
+				malformed: false
+			};
 		}
 		if (typeof deltaRecord.role === 'string') {
 			return { chunk: { content: '', done: false }, malformed: false };
 		}
 	}
-	if (typeof record.finish_reason === 'string') {
+	if (finishReason !== undefined) {
+		return {
+			chunk: { content: '', done: true, finishReason },
+			malformed: false
+		};
+	}
+	if (record.finish_reason === null && delta && typeof delta === 'object') {
 		return { chunk: { content: '', done: false }, malformed: false };
 	}
 	return { chunk: { content: '', done: false }, malformed: true };
@@ -648,12 +709,21 @@ export function fallbackProse(
 	actionText: string,
 	outcome: TurnOutcome,
 	rolls: RollRecord[] = [],
-	narrationMode?: TurnNarrationMode
+	narrationMode?: TurnNarrationMode,
+	brutality?: number,
+	debauchery?: number
 ): string {
 	const inline = (value: string, maxChars: number) =>
 		value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
 	const noun = (room.name ? inline(room.name, 200) : '') || `the ${room.type}`;
 	const mode = normalizeNarrationMode(narrationMode);
+	const target = resolveNarrationParagraphTarget({
+		narrationMode: mode,
+		roomType: room.type,
+		outcome,
+		brutality,
+		debauchery
+	});
 	if (mode === 'loot_search') {
 		const items = outcome.rewards ?? [];
 		const names = items.map((item) => inline(item.name, 200));
@@ -676,10 +746,16 @@ export function fallbackProse(
 		const injury = outcome.injury
 			? `The only recorded injury is ${inline(outcome.injury, 500)}.`
 			: 'No injury is recorded.';
-		return `The failed attempt leaves you facing the settled consequence in ${noun}.\n\n${inline(
-			outcome.message,
-			2000
-		)} ${hp} ${injury}`.trim();
+		const paragraphs = [
+			`The failed attempt leaves you facing the settled consequence in ${noun}. ${inline(outcome.message, 2000)} ${hp} ${injury}`,
+			`The room's response has already run its course, and the recorded result remains ${outcome.result}; nothing beyond that settled outcome is imposed.`,
+			`The physical aftermath is limited to the record: ${hp} ${injury}`,
+			`Around you, ${noun} bears witness to the concluded failure while you absorb exactly what the outcome states.`,
+			`The consequence lingers as an aftermath rather than a new event; no further loss, wound, reward, or change follows.`,
+			`The encounter's final measure is unchanged: ${inline(outcome.message, 2000)} The dungeon adds no hidden punishment to it.`,
+			`When the moment settles, you remain with the authoritative result and its recorded aftermath, with no additional mechanics or injury.`
+		];
+		return paragraphs.slice(0, target).join('\n\n');
 	}
 	const action = actionText
 		.replace(/\s+/g, ' ')
@@ -696,7 +772,9 @@ export function fallbackProse(
 				Math.abs(margin) <= 1 ? 'a near result' : 'a wide result'
 			} by ${Math.abs(margin)}.`
 		: 'No roll is required.';
-	const won = outcome.result === 'success' || outcome.result === 'reward';
+	const failed =
+		outcome.result === 'failure' || outcome.result === 'defeat' || outcome.hpAfter <= 0;
+	const won = !failed && (outcome.result === 'success' || outcome.result === 'reward');
 	const hp =
 		outcome.hpDelta < 0
 			? `You lose ${Math.abs(outcome.hpDelta)} HP, falling from ${outcome.hpBefore} to ${outcome.hpAfter}.`
@@ -725,6 +803,16 @@ export function fallbackProse(
 		case 'rest':
 			scene = `The shelter of ${noun} remains quiet while the authoritative outcome takes effect.`;
 			break;
+	}
+	if (failed) {
+		const paragraphs = [
+			`${submitted} ${scene} ${inline(outcome.message, 2000)} ${rollNote} ${hp} ${injury}`,
+			`The opponent or hazard's response decides the exchange exactly as recorded, leaving the failed action behind without changing the settled result.`,
+			`The beatdown and its consequences go no further than the authoritative loss: ${hp} No additional damage or state change occurs.`,
+			`The bodily aftermath is equally bounded. ${injury} Nothing else is wounded, broken, or permanently changed.`,
+			`As the scene stills in ${noun}, the failure remains final for this action: ${inline(outcome.message, 2000)} No reward or unrecorded consequence appears.`
+		];
+		return paragraphs.slice(0, target).join('\n\n');
 	}
 	return `${submitted}\n\n${scene} ${inline(outcome.message, 2000)} ${rollNote} ${hp} ${injury}`.trim();
 }
@@ -771,9 +859,19 @@ export async function* fallbackProseStream(
 	actionText: string,
 	outcome: TurnOutcome,
 	rolls: RollRecord[] = [],
-	narrationMode?: TurnNarrationMode
+	narrationMode?: TurnNarrationMode,
+	brutality?: number,
+	debauchery?: number
 ): AsyncGenerator<StreamChunk> {
-	const text = fallbackProse(room, actionText, outcome, rolls, narrationMode);
+	const text = fallbackProse(
+		room,
+		actionText,
+		outcome,
+		rolls,
+		narrationMode,
+		brutality,
+		debauchery
+	);
 	yield* chunkFallback(text);
 }
 
@@ -903,6 +1001,9 @@ export interface ProseInput {
 	rolls?: RollRecord[];
 	/** Missing on legacy turns and normalized to ordinary_action. */
 	narrationMode?: TurnNarrationMode;
+	/** Persisted run sliders; omitted legacy/unit callers safely clamp to level 1. */
+	brutality?: number;
+	debauchery?: number;
 	endpoints: readonly EndpointSource[];
 	signal?: AbortSignal;
 	/** Optional call-site context copied into fallback diagnostics. */
@@ -921,8 +1022,17 @@ function notifyFallbackDiagnostic(callback: (() => void) | undefined): void {
 
 /** Fetches prose narration for a resolved turn, or deterministic prose. */
 export async function narrateProse(input: ProseInput): Promise<string> {
-	const { system, room, actionText, outcome, rolls, narrationMode } = input;
-	const prompt = composeProse({ system, room, actionText, outcome, rolls, narrationMode });
+	const { system, room, actionText, outcome, rolls, narrationMode, brutality, debauchery } = input;
+	const prompt = composeProse({
+		system,
+		room,
+		actionText,
+		outcome,
+		rolls,
+		narrationMode,
+		brutality,
+		debauchery
+	});
 	return runPurpose(
 		'prose',
 		input.endpoints,
@@ -930,7 +1040,7 @@ export async function narrateProse(input: ProseInput): Promise<string> {
 			{ role: 'system', content: prompt.system },
 			{ role: 'user', content: prompt.user }
 		],
-		fallbackProse(room, actionText, outcome, rolls, narrationMode),
+		fallbackProse(room, actionText, outcome, rolls, narrationMode, brutality, debauchery),
 		{},
 		input.diagnostics
 	);
@@ -944,11 +1054,19 @@ export async function narrateProse(input: ProseInput): Promise<string> {
  * fallback prose.
  */
 export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChunk> {
-	const { system, room, actionText, outcome, rolls, narrationMode } = input;
+	const { system, room, actionText, outcome, rolls, narrationMode, brutality, debauchery } = input;
 	const diagnostics = input.diagnostics;
 	const endpoint = pickEndpoint(input.endpoints, 'prose');
 	if (!endpoint) {
-		const fallback = fallbackProse(room, actionText, outcome, rolls, narrationMode);
+		const fallback = fallbackProse(
+			room,
+			actionText,
+			outcome,
+			rolls,
+			narrationMode,
+			brutality,
+			debauchery
+		);
 		logLlmFallback({
 			purpose: 'prose',
 			mode: 'stream',
@@ -963,7 +1081,16 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 		yield* chunkFallback(fallback);
 		return;
 	}
-	const prompt = composeProse({ system, room, actionText, outcome, rolls, narrationMode });
+	const prompt = composeProse({
+		system,
+		room,
+		actionText,
+		outcome,
+		rolls,
+		narrationMode,
+		brutality,
+		debauchery
+	});
 	const configuredTimeoutMs = endpoint.timeoutMs ?? config.LLM_TIMEOUT_MS;
 	let visibleChars = 0;
 	let stats: LlmStreamStats = { bytes: 0, sseEvents: 0, parseFailures: 0, contentDeltas: 0 };
@@ -990,7 +1117,15 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 	} catch (error) {
 		const failure = toLlmFailure(error);
 		if (failure.reason === 'client_disconnect' || failure.reason === 'lease_lost') throw failure;
-		const fallback = fallbackProse(room, actionText, outcome, rolls, narrationMode);
+		const fallback = fallbackProse(
+			room,
+			actionText,
+			outcome,
+			rolls,
+			narrationMode,
+			brutality,
+			debauchery
+		);
 		logLlmFallback({
 			purpose: 'prose',
 			mode: 'stream',
@@ -1014,7 +1149,15 @@ export async function* streamProse(input: ProseInput): AsyncGenerator<StreamChun
 		return;
 	}
 	if (visibleChars === 0) {
-		const fallback = fallbackProse(room, actionText, outcome, rolls, narrationMode);
+		const fallback = fallbackProse(
+			room,
+			actionText,
+			outcome,
+			rolls,
+			narrationMode,
+			brutality,
+			debauchery
+		);
 		logLlmFallback({
 			purpose: 'prose',
 			mode: 'stream',

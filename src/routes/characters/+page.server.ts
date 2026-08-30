@@ -11,7 +11,6 @@ import {
 	deriveStats,
 	gearUpgradeCost,
 	levelUpgradeCost,
-	provisionPersistentGear,
 	type PrimaryStat
 } from '$lib/server/game';
 import { characters, runs, users } from '$lib/server/schema';
@@ -45,7 +44,7 @@ export const load: PageServerLoad = async (event) => {
 			hp: 0,
 			maxHp: 0,
 			defense: 5 + character.level,
-			inventory: provisionPersistentGear(character.gearBonus)
+			inventory: []
 		};
 		const stats = deriveStats(input);
 		return {
@@ -133,10 +132,11 @@ async function upgrade(event: Parameters<Actions[string]>[0], kind: UpgradeKind)
 			} else if (kind === 'gear') {
 				const target = character.gearBonus + 1;
 				const nextCost = gearUpgradeCost(target);
-				if (nextCost === null) return { error: 'Company gear is already +3.', status: 400 };
+				if (nextCost === null)
+					return { error: 'Starting loot is already at 3 pieces.', status: 400 };
 				cost = nextCost;
 				values = { gearBonus: target };
-				message = `Company gear improved to +${target}.`;
+				message = `Starting loot increased to ${target} pieces.`;
 			} else {
 				if (character.maxStartRoom >= 1000)
 					return { error: 'Starting room access is already at the maximum.', status: 400 };

@@ -20,9 +20,14 @@ import {
 	_validFollowupDuplicate as validFollowupDuplicate
 } from '../src/routes/play/[runId]/+page.server';
 import {
+	_durableRoomNarrationAfterFailure as durableRoomNarrationAfterFailure,
+	_durableTurnNarrationAfterFailure as durableTurnNarrationAfterFailure,
 	_outerRouteDiagnostic as outerRouteDiagnostic,
 	_preStreamDatabaseRouteError as preStreamDatabaseRouteError
 } from '../src/routes/play/[runId]/stream/+server';
+
+const paragraphCount = (text: string) =>
+	text.split(/\n\n/).filter((paragraph) => paragraph.trim().length > 0).length;
 
 type TurnFixture = {
 	id: string;
@@ -182,13 +187,13 @@ describe('post-encounter route predicates', () => {
 	});
 
 	it('accepts duplicate acts only for the exact next sequence and ordinary action mode', () => {
-		expect(validActDuplicate({ sequence: 6, intent: { narrationMode: 'ordinary_action' } }, 5)).toBe(
-			true
-		);
+		expect(
+			validActDuplicate({ sequence: 6, intent: { narrationMode: 'ordinary_action' } }, 5)
+		).toBe(true);
 		expect(validActDuplicate({ sequence: 6, intent: {} }, 5)).toBe(true);
-		expect(validActDuplicate({ sequence: 7, intent: { narrationMode: 'ordinary_action' } }, 5)).toBe(
-			false
-		);
+		expect(
+			validActDuplicate({ sequence: 7, intent: { narrationMode: 'ordinary_action' } }, 5)
+		).toBe(false);
 		expect(validActDuplicate({ sequence: 6, intent: { narrationMode: 'loot_search' } }, 5)).toBe(
 			false
 		);
@@ -199,6 +204,110 @@ describe('post-encounter route predicates', () => {
 });
 
 describe('recovery diagnostics', () => {
+	it('replaces partial token-truncated failure prose with the persisted five-paragraph fallback', () => {
+		const durable = durableTurnNarrationAfterFailure({
+			accumulated: 'partial model prose that must not remain',
+			reason: 'response_truncated',
+			room: { type: 'monster', name: 'Watcher' },
+			actionText: 'I attack',
+			outcome: {
+				result: 'failure',
+				hpBefore: 5,
+				hpAfter: 4,
+				hpDelta: -1,
+				message: 'The watcher drives you back.'
+			},
+			rolls: [],
+			narrationMode: 'ordinary_action',
+			brutality: 5,
+			debauchery: 1
+		});
+		expect(paragraphCount(durable)).toBe(5);
+		expect(durable).not.toContain('partial model prose');
+	});
+
+	it('replaces partial byte-truncated consequence prose with the persisted seven-paragraph fallback', () => {
+		const durable = durableTurnNarrationAfterFailure({
+			accumulated: 'partial model prose that must not remain',
+			reason: 'response_too_large',
+			room: { type: 'boss', name: 'Watcher' },
+			actionText: 'face the aftermath',
+			outcome: {
+				result: 'defeat',
+				hpBefore: 0,
+				hpAfter: 0,
+				hpDelta: 0,
+				message: 'The settled outcome remains.'
+			},
+			rolls: [],
+			narrationMode: 'failure_consequence',
+			brutality: 1,
+			debauchery: 5
+		});
+		expect(paragraphCount(durable)).toBe(7);
+		expect(durable).not.toContain('partial model prose');
+	});
+
+	it('retains partial prose for ordinary interruption but replaces a truncated room entry', () => {
+		expect(
+			durableTurnNarrationAfterFailure({
+				accumulated: 'durable partial network prose',
+				reason: 'network_error',
+				room: { type: 'monster', name: 'Watcher' },
+				actionText: 'I attack',
+				outcome: {
+					result: 'success',
+					hpBefore: 5,
+					hpAfter: 5,
+					hpDelta: 0,
+					message: 'Won.'
+				},
+				rolls: [],
+				narrationMode: 'ordinary_action',
+				brutality: 5,
+				debauchery: 5
+			})
+		).toBe('durable partial network prose');
+		const room = durableRoomNarrationAfterFailure({
+			accumulated: 'partial room prose',
+			reason: 'response_truncated',
+			room: { type: 'rest', name: 'Long Hall' },
+			runSummary: 'The run continues.'
+		});
+		expect(paragraphCount(room)).toBe(2);
+		expect(room).not.toContain('partial room prose');
+	});
+
+	it('replaces partial incomplete-response prose with the persisted full fallback', () => {
+		const durable = durableTurnNarrationAfterFailure({
+			accumulated: 'partial model prose that must not remain',
+			reason: 'response_incomplete',
+			room: { type: 'monster', name: 'Watcher' },
+			actionText: 'I attack',
+			outcome: {
+				result: 'failure',
+				hpBefore: 5,
+				hpAfter: 4,
+				hpDelta: -1,
+				message: 'The watcher drives you back.'
+			},
+			rolls: [],
+			narrationMode: 'ordinary_action',
+			brutality: 5,
+			debauchery: 1
+		});
+		expect(paragraphCount(durable)).toBe(5);
+		expect(durable).not.toContain('partial model prose');
+		const room = durableRoomNarrationAfterFailure({
+			accumulated: 'partial room prose',
+			reason: 'response_incomplete',
+			room: { type: 'rest', name: 'Long Hall' },
+			runSummary: 'The run continues.'
+		});
+		expect(paragraphCount(room)).toBe(2);
+		expect(room).not.toContain('partial room prose');
+	});
+
 	it('emits collected recovery intents only after a successful commit', async () => {
 		config.LLM_DIAGNOSTICS = true;
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

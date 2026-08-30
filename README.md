@@ -49,9 +49,9 @@ npm run preview
 | `BOOTSTRAP_ADMIN_PASSWORD` | Required only when no administrator exists; must be 12 to 72 UTF-8 bytes and may then be removed.                     |
 | `ALLOW_INSECURE_LLM_URLS`  | Allows plain HTTP model endpoints. Keep false outside isolated development.                                           |
 | `ALLOW_PRIVATE_LLM_URLS`   | Allows private, loopback, or link-local model hosts. Keep false unless a trusted local endpoint is intentional.       |
-| `LLM_MAX_TOKENS`           | Maximum tokens requested from a model.                                                                                |
+| `LLM_MAX_TOKENS`           | Maximum tokens requested from a model; defaults to 1600.                                                              |
 | `LLM_TIMEOUT_MS`           | Model request timeout.                                                                                                |
-| `LLM_MAX_RESPONSE_BYTES`   | Maximum response body read from a model; defaults to 8192 bytes.                                                      |
+| `LLM_MAX_RESPONSE_BYTES`   | Maximum response body read from a model; defaults to 262144 bytes.                                                    |
 | `LLM_DIAGNOSTICS`          | Emits sanitized one-line fallback warnings when true; defaults to true.                                               |
 
 `DATABASE_URL` and `APP_ENCRYPTION_KEY` are always mandatory and have no application defaults. The two bootstrap variables are required only until the first administrator is created. The encryption key must be exactly 64 hexadecimal characters or canonical base64 that decodes to exactly 32 bytes. Keep `.env`, database passwords and URLs, encryption keys, model keys, backups, and cookies out of logs and source control. If `APP_ENCRYPTION_KEY` is lost or changed, existing encrypted endpoint credentials cannot be decrypted.
@@ -91,7 +91,7 @@ Endpoint records have one of four purposes:
 
 Enabled endpoints are tried in name order for their purpose. URLs and all resolved A/AAAA addresses are validated immediately before each request, redirects are not followed, reads and token counts are bounded, and failures fall through to the next endpoint. If all endpoints fail or none are configured, deterministic action heuristics, suggestions, prose, and summaries are used. Model output never controls dice, targets, rewards, health, inventory, or settlement. No model or network call occurs inside a database transaction.
 
-`LLM_MAX_RESPONSE_BYTES=8192` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text. Values must be plain digits without separators or units (see `Troubleshooting LLM environment limits`). Verbose local servers may need `262144` or larger; keep a finite bound in every deployment.
+`LLM_MAX_RESPONSE_BYTES=262144` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text. Values must be plain digits without separators or units (see `Troubleshooting LLM environment limits`). For SSE narrations that can target seven paragraphs, configure at least `LLM_MAX_TOKENS=1600` and `LLM_MAX_RESPONSE_BYTES=262144`; verbose local servers may need a larger finite byte bound.
 
 ### LLM fallback diagnostics
 
@@ -107,7 +107,7 @@ Each warning is one JSON object prefixed for filtering. It contains only allowli
 [dungeon-llm-fallback] {"event":"llm_fallback","timestamp":"2026-08-29T12:00:00.000Z","correlationId":"497f6eca-6276-4993-bfeb-53cbbbba6f08","purpose":"prose","mode":"stream","reason":"http_status","endpointId":"c56a4180-65aa-42ec-a945-5fd21dec0538","configuredTimeoutMs":20000,"status":503,"bytes":0,"sseEvents":0,"parseFailures":0,"contentDeltas":0,"visibleChars":412,"runId":"b3b1557e-9937-4bd6-bbd8-13d2cf0c7d4b","targetId":"bb6b671d-32d4-4f92-958f-16e9122d4477","narrationKind":"turn"}
 ```
 
-Common reasons include `no_enabled_endpoint` when no endpoint is enabled for the purpose, `timeout` when the bounded call expires, `http_status` for a non-success upstream response, `response_too_large` when the finite wire-byte limit is exceeded, `stream_parse_error` when malformed SSE events produce no text, `no_content_delta` when a successful stream closes without text, and `database_or_route_error` when a route must save deterministic text after an internal failure. Set `LLM_DIAGNOSTICS=false` to disable these warnings.
+Common reasons include `no_enabled_endpoint` when no endpoint is enabled for the purpose, `timeout` when the bounded call expires, `http_status` for a non-success upstream response, `response_truncated` when the model reports that its token limit cut off the answer, `response_too_large` when the finite wire-byte limit is exceeded, `stream_parse_error` when malformed SSE events produce no text, `no_content_delta` when a successful stream closes without text, and `database_or_route_error` when a route must save deterministic text after an internal failure. Set `LLM_DIAGNOSTICS=false` to disable these warnings.
 
 `[dungeon-llm-fallback]` means the LLM layer selected or generated a deterministic fallback; it does not by itself prove that fallback was persisted or delivered. `[dungeon-llm-route-error]` uses event `llm_route_error` when the streaming route fails before durable persistence or delivery completes. A fallback event may therefore be followed by a route-error when saving or delivery then fails, and a route-error does not imply the fallback was saved. Route-error records use the same bounded reason and UUID allowlists, contain no content or raw errors, and suppress expected client disconnect and lost-lease noise.
 
@@ -121,7 +121,7 @@ JavaScript-enhanced actions return one exact durable narration ID: acting and fo
 
 - A character profile starts with exactly one point split across Body, Mind, and Spirit, each 0 or 1. Species and calling choices are editor-managed snapshots; build and height use fixed choices, profiles can include a 2000-character description, and free-text pronouns plus gender/presentation provide respectful narrative context without changing rules.
 - Character level and stats are permanent. Each level adds one stat point; stats are capped at 3 through level 9, while level 10 permits at most one stat at 4. Reaching levels 2 through 10 costs 20 through 100 company gold.
-- Permanent company gear tiers +1 through +3 cost 25, 75, and 225 company gold. Gear is materialized into each new run as explicitly non-sellable inventory.
+- Starting-loot tiers 1 through 3 cost 25, 75, and 225 company gold. Each tier grants one freshly generated random magic item or valuable at the start of every expedition. These items are sellable, vary with the run seed, and carried magic items apply their normal effects immediately.
 - Starting-room access costs 5 company gold per one-room increase, to a maximum of 1000. Starting an expedition itself is free and may use any room from 1 through that character's unlocked maximum.
 - New rules-version-2 expeditions snapshot the character's level, stats, gear, starting room, and company settings. Later edits and upgrades cannot change an active run. Legacy rules-version-1 runs continue using their saved charter metadata, inventory, HP, and settings.
 - Retirement is irreversible and is blocked while a character has an active expedition. Retired characters leave normal rosters and cannot be edited, upgraded, or sent on new expeditions; their completed runs and company records remain intact.
@@ -131,8 +131,8 @@ JavaScript-enhanced actions return one exact durable narration ID: acting and fo
 
 Brutality and debauchery each range from 1 through 5 in company settings. They are copied into new runs and direct generated prose, not mechanics, rolls, or rewards.
 
-- Brutality: soft, fair, grim, harsh, then merciless narrative treatment.
-- Debauchery: chaste, suggestive, mildly explicit, explicit, then very explicit adult themes.
+- Brutality: soft, fair, grim, harsh, then merciless narrative treatment. Its saved 1-through-5 value is also the target paragraph count for the initial narration of a failed or defeated ordinary action.
+- Debauchery: chaste, suggestive, mildly explicit, explicit, then very explicit adult themes. Its saved 1-through-5 value is the target paragraph count for the separate resolved-failure consequence; boss rooms or final defeat add two dramatic paragraphs once (maximum seven) without adding mechanics, harm, or unsafe sexualized defeat content.
 
 Character age is profile information from 1 through 999 and does not alter company settings or run access. Operators remain responsible for model configuration, moderation, and any legally required age gate.
 
@@ -143,7 +143,7 @@ Character age is profile information from 1 through 999 and does not alter compa
 - Combat uses attack against monster defense. A skill approach uses its governing primary stat and relevant gear. Trap difficulty is `5 + floor(room / 5)` and uses the trap's skill unless the action is interpreted as combat.
 - A failed monster, boss, or trap check costs 1 HP and requires one consequence narration before proceeding. Fatal settlement remains atomic with the failed action, while one final consequence narration remains available. A rest room requires no check and heals 1 HP. A draught drawn as a reward heals 1 HP immediately, up to maximum HP.
 - Treasure requires no check, has three generated rewards, and resolves one draw immediately. Successful monster and trap encounters reveal a deterministic three-item post-encounter pool; bosses reveal six. A later loot-search resolution draws one item for a normal encounter or two for a boss. Drawn draughts remain recorded among discovered rewards but are consumed immediately, while only non-draught rewards enter run inventory.
-- On defeat or abandonment, inventory is settled exactly once: sellable magic items yield deterministic 1d2 gold, valuables deterministic 1d6, draughts zero, and persistent gear zero. Proceeds enter the company wallet and inventory is cleared.
+- On defeat or abandonment, inventory is settled exactly once: sellable magic items yield deterministic 1d2 gold, valuables deterministic 1d6, and draughts zero. Starting loot follows those same sale rules. Proceeds enter the company wallet and inventory is cleared. Abandoning before any action resolves (run version 0) does not sell that run's starting loot, preventing farm-and-abandon gold; once an action has resolved, starting loot sells normally.
 
 The run seed, room number, turn sequence, and purpose label seed every room, check, reward, and settlement stream. Complete charter metadata and the current room are persisted at run start, including a pending initial room-entry snapshot. The large room header conceals the room name and type until an exact current-room turn has been persisted. Each accepted action inserts one immutable turn at `version + 1` and applies only its authoritative immediate effects. Successful combat and trap turns enter `awaiting_loot`; failed turns enter `awaiting_failure`; treasure and rest enter `awaiting_proceed`. Idempotent follow-up turns award loot or narrate the already-settled consequence before proceeding. Only an idempotent, UUID-keyed Proceed Deeper command generates the next room; it does not increment the turn version or resolve rewards. Expected versions reject stale forms, and row locks plus phase checks prevent concurrent commands from advancing twice. Narration and summaries run outside gameplay transactions and cannot change immutable snapshots or outcomes.
 
@@ -173,7 +173,7 @@ The app container waits for PostgreSQL, applies migrations, runs idempotent admi
 
 ### Troubleshooting LLM environment limits
 
-Compose only forwards `.env` values into a service when that service's entry in `docker-compose.yml` explicitly references them. Earlier versions did not reference `LLM_MAX_TOKENS`, `LLM_MAX_RESPONSE_BYTES`, or `LLM_TIMEOUT_MS`, so the app silently used its built-in defaults (600 tokens, 8192 bytes, 20000 ms) even when `.env` set other values. The current Compose file forwards all three, quoted so the container always receives strings, but changing `.env` while a container is already running has no effect until the app image is rebuilt and the container is recreated:
+Compose only forwards `.env` values into a service when that service's entry in `docker-compose.yml` explicitly references them. Earlier versions did not reference `LLM_MAX_TOKENS`, `LLM_MAX_RESPONSE_BYTES`, or `LLM_TIMEOUT_MS`, so the app silently used its built-in defaults even when `.env` set other values. The current defaults are 1600 tokens, 262144 bytes, and 20000 ms, and Compose forwards all three values quoted so the container always receives strings. Changing `.env` while a container is already running has no effect until the app image is rebuilt and the container is recreated:
 
 ```sh
 docker compose up -d --build --force-recreate app
@@ -197,7 +197,7 @@ And verify what the running process actually parsed after recreation:
 docker compose exec app sh -lc 'printf "%s\n" "$LLM_MAX_RESPONSE_BYTES"'
 ```
 
-A fallback diagnostic of `configuredResponseByteLimit:1` means the running process actually parsed the value as `1`, not as `1048576` with a typo; recheck that `.env` holds the exact plain-digit value. `LLM_MAX_RESPONSE_BYTES` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text; verbose local servers may need `262144` or larger. Keep a finite bound in every deployment.
+A fallback diagnostic of `configuredResponseByteLimit:1` means the running process actually parsed the value as `1`, not as `1048576` with a typo; recheck that `.env` holds the exact plain-digit value. `LLM_MAX_RESPONSE_BYTES` counts the complete JSON or SSE wire representation, including framing and reasoning fields, not only visible model text. Seven-paragraph SSE narration should use at least 1600 tokens and 262144 bytes; verbose local servers may need a larger finite byte bound.
 
 ## GHCR publishing and package permissions
 

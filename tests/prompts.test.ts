@@ -13,6 +13,7 @@ import {
 	delimit,
 	serializeRoomForPrompt,
 	PROSE_LIMITS,
+	resolveNarrationParagraphTarget,
 	SYSTEM_PROFILE_LIMITS
 } from '../src/lib/server/prompts';
 
@@ -76,6 +77,93 @@ describe('level prompts', () => {
 describe('delimit', () => {
 	it('wraps untrusted content in explicit tags', () => {
 		expect(delimit('player', 'attack the guard')).toBe('<player>\nattack the guard\n</player>');
+	});
+});
+
+describe('narration paragraph targets', () => {
+	const outcome = {
+		result: 'failure' as const,
+		hpBefore: 5,
+		hpAfter: 4,
+		hpDelta: -1,
+		message: 'failed'
+	};
+
+	it.each([1, 2, 3, 4, 5])('uses brutality %i for nonfatal and fatal initial failures', (level) => {
+		for (const failed of [outcome, { ...outcome, result: 'defeat' as const, hpAfter: 0 }]) {
+			expect(
+				resolveNarrationParagraphTarget({
+					narrationMode: 'ordinary_action',
+					roomType: 'monster',
+					outcome: failed,
+					brutality: level,
+					debauchery: 1
+				})
+			).toBe(level);
+		}
+	});
+
+	it.each([1, 2, 3, 4, 5])('uses debauchery %i for consequence variants', (level) => {
+		const target = (roomType: 'monster' | 'boss', result: 'failure' | 'defeat', hpAfter: number) =>
+			resolveNarrationParagraphTarget({
+				narrationMode: 'failure_consequence',
+				roomType,
+				outcome: { ...outcome, result, hpAfter },
+				brutality: 1,
+				debauchery: level
+			});
+		expect(target('monster', 'failure', 4)).toBe(level);
+		expect(target('boss', 'failure', 4)).toBe(level + 2);
+		expect(target('monster', 'defeat', 0)).toBe(level + 2);
+		expect(target('boss', 'defeat', 0)).toBe(level + 2);
+	});
+
+	it('keeps success and loot at two, clamps invalid sliders, and normalizes missing mode', () => {
+		const success = { ...outcome, result: 'success' as const, hpAfter: 5, hpDelta: 0 };
+		expect(
+			resolveNarrationParagraphTarget({
+				roomType: 'monster',
+				outcome,
+				brutality: 99,
+				debauchery: 1
+			})
+		).toBe(5);
+		expect(
+			resolveNarrationParagraphTarget({
+				narrationMode: 'ordinary_action',
+				roomType: 'monster',
+				outcome,
+				brutality: Number.NaN,
+				debauchery: 1
+			})
+		).toBe(1);
+		expect(
+			resolveNarrationParagraphTarget({
+				narrationMode: 'failure_consequence',
+				roomType: 'monster',
+				outcome,
+				brutality: 1,
+				debauchery: -10
+			})
+		).toBe(1);
+		expect(
+			resolveNarrationParagraphTarget({
+				narrationMode: 'ordinary_action',
+				roomType: 'monster',
+				outcome: success,
+				brutality: 5,
+				debauchery: 5
+			})
+		).toBe(2);
+		expect(
+			resolveNarrationParagraphTarget({
+				narrationMode: 'loot_search',
+				roomType: 'boss',
+				outcome: success,
+				brutality: 5,
+				debauchery: 5
+			})
+		).toBe(2);
 	});
 });
 
@@ -158,7 +246,7 @@ describe('prompt composition', () => {
 		expect(prompt.user).toContain('<rolls>');
 		expect(prompt.user).toContain('"total":9');
 		expect(prompt.user).toContain('</rolls>');
-		expect(prompt.user).toMatch(/two substantial paragraphs/);
+		expect(prompt.user).toMatch(/exactly 2 substantial paragraphs/);
 		expect(prompt.user).toMatch(/Never reverse a success or failure/);
 	});
 
@@ -194,12 +282,29 @@ describe('prompt composition', () => {
 			room,
 			actionText: 'recover',
 			outcome: { ...outcome, result: 'failure', hpAfter: 9, hpDelta: -1 },
-			narrationMode: 'failure_consequence'
+			narrationMode: 'failure_consequence',
+			debauchery: 4
 		});
 		expect(prompt.user).toContain('Do not add mechanics, damage, injury');
+		expect(prompt.user).toContain('exactly 4 distinct substantial paragraphs');
 		expect(prompt.user).toContain(
-			'never include coercion, sexual violence, sexualized punishment or defeat'
+			'never include coercion, sexual violence, coercive sexual punishment, sexualized punishment or defeat'
 		);
+		expect(prompt.user).toContain('Boss or final-defeat extra length is for drama only');
+	});
+
+	it('puts the brutality target in an initial failure prompt without inventing state', () => {
+		const prompt = composeProse({
+			system,
+			room,
+			actionText: 'I dodge',
+			outcome: { ...outcome, result: 'failure', hpAfter: 9, hpDelta: -1 },
+			narrationMode: 'ordinary_action',
+			brutality: 5,
+			debauchery: 1
+		});
+		expect(prompt.user).toContain('exactly 5 distinct substantial paragraphs');
+		expect(prompt.user).toContain('Do not invent damage, state, injury');
 	});
 
 	it('bounds and escapes every prose input delimiter', () => {

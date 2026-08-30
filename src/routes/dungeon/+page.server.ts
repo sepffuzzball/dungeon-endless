@@ -6,7 +6,7 @@ import { requireUser } from '$lib/server/authorization';
 import { randomUrlToken } from '$lib/server/crypto';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
-import { generateRoom, provisionPersistentGear } from '$lib/server/game';
+import { generateRoom, provisionExpeditionLoot } from '$lib/server/game';
 import {
 	achievements,
 	characters,
@@ -123,6 +123,7 @@ export const actions: Actions = {
 					.limit(1)
 					.for('update');
 				if (!account) return { error: 'Company not found.', status: 404 };
+				const startingLoot = provisionExpeditionLoot(seed, character.gearBonus);
 				const meta: RunMeta = {
 					startRoom,
 					startLevel: character.level,
@@ -159,7 +160,7 @@ export const actions: Actions = {
 						roomType: generated.type,
 						roomData,
 						meta,
-						inventory: provisionPersistentGear(character.gearBonus)
+						inventory: startingLoot
 					})
 					.returning({ id: runs.id });
 				await tx.insert(roomEntries).values({

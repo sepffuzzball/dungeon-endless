@@ -21,7 +21,7 @@
 		<div class="eyebrow">{data.companyName}</div>
 		<h1>Characters</h1>
 		<p class="lede">
-			Shape lasting heroes, improve their company equipment, and prepare the next descent.
+			Shape lasting heroes, improve their starting loot, and prepare the next descent.
 		</p>
 	</div>
 	<div class="actions">
@@ -59,9 +59,15 @@
 				</div>
 				<div class="mini-stats">
 					<span><small>Level</small>{character.level}</span><span
-						><small>Gear</small>+{character.gearBonus}</span
+						><small>Starting loot</small>{character.gearBonus}</span
 					><span><small>Start room</small>{character.maxStartRoom}</span>
 				</div>
+				<p class="text-muted">
+					Starts each expedition with {character.gearBonus} random sellable loot {character.gearBonus ===
+					1
+						? 'item'
+						: 'items'}.
+				</p>
 				<div class="attribute-groups" aria-label={`${character.name} attributes and skills`}>
 					{#each attributeGroups as group}
 						<div class="attribute-group">
@@ -124,7 +130,7 @@
 									type="submit"
 									class="btn-sm btn-secondary"
 									disabled={!!character.activeRunId || character.gearBonus >= 3}
-									>Gear +1 / {[25, 75, 225][character.gearBonus] ?? 'max'} gold</button
+									>Starting loot +1 / {[25, 75, 225][character.gearBonus] ?? 'max'} gold</button
 								>
 							</form>
 							<form method="POST" action="?/roomUp">

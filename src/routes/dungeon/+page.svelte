@@ -38,7 +38,10 @@
 							startRoom = 1;
 						}}
 						aria-pressed={selected === item.id}
-						><strong>{item.name}</strong><span>Level {item.level} / Gear +{item.gearBonus}</span
+						><strong>{item.name}</strong><span
+							>Level {item.level} / {item.gearBonus} starting loot {item.gearBonus === 1
+								? 'item'
+								: 'items'}</span
 						>{#if item.activeRun}<span class="badge green">Depth {item.activeRun.roomNumber}</span
 							>{/if}</button
 					>{/each}
@@ -57,6 +60,12 @@
 			<p class="text-muted">
 				Company settings: Brutality {data.settings.brutality} / Debauchery {data.settings
 					.debauchery}
+			</p>
+			<p>
+				Starts each expedition with {character.gearBonus} random sellable loot {character.gearBonus ===
+				1
+					? 'item'
+					: 'items'}.
 			</p>
 			<form method="POST" action="?/start">
 				<input type="hidden" name="characterId" value={character.id} /><label for="startRoom"

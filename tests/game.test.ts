@@ -5,6 +5,7 @@ import {
 	MAX_COMPANY_GOLD,
 	TRAP_DC_BASE,
 	checkedCompanyGoldAdd,
+	abandonSettlementGold,
 	applyLoot,
 	classifyEncounterOutcome,
 	deriveStatBreakdowns,
@@ -21,9 +22,9 @@ import {
 	normalizeActionIntent,
 	normalizeNarrationMode,
 	normalizeTurnOutcome,
+	provisionExpeditionLoot,
 	resolveEncounter,
 	resolveRunBaseStats,
-	provisionPersistentGear,
 	settlementGold,
 	sellValue,
 	skillPrimary,
@@ -461,15 +462,6 @@ describe('persistent progression', () => {
 		expect(validImageUrl('https://')).toBe(false);
 	});
 
-	it('materializes non-sellable persistent gear and excludes it from defeat or abandon settlement', () => {
-		const gear = provisionPersistentGear(2);
-		expect(gear.every((item) => item.sellable === false)).toBe(true);
-		const inventory: InventoryItem[] = [...gear, { kind: 'valuable', name: 'Sellable prize' }];
-		const withGear = settlementGold(inventory, 'run', 5, 2);
-		const prizeOnly = settlementGold([inventory[2]], 'run', 5, 2);
-		expect(withGear).toBe(prizeOnly);
-	});
-
 	it('keeps a valid run snapshot authoritative after mutable character stats change', () => {
 		const meta = { startLevel: 2, allocatedBody: 1, allocatedMind: 1, allocatedSpirit: 0 };
 		expect(resolveRunBaseStats(meta, { body: 3, mind: 3, spirit: 3 })).toEqual({
@@ -477,6 +469,88 @@ describe('persistent progression', () => {
 			mind: 1,
 			spirit: 0
 		});
+	});
+});
+
+describe('expedition starting loot', () => {
+	it('returns no items for zero and exactly one item per valid gear bonus', () => {
+		expect(provisionExpeditionLoot('count', 0)).toEqual([]);
+		for (const count of [1, 2, 3]) {
+			expect(provisionExpeditionLoot('count', count)).toHaveLength(count);
+		}
+	});
+
+	it('rejects non-integer and out-of-range gear bonuses', () => {
+		for (const count of [-1, 0.5, 4, Number.NaN]) {
+			expect(() => provisionExpeditionLoot('invalid', count)).toThrow(RangeError);
+		}
+	});
+
+	it('is deterministic for one seed and varies across known seeds', () => {
+		const first = provisionExpeditionLoot('alpha', 3);
+		expect(provisionExpeditionLoot('alpha', 3)).toEqual(first);
+		expect(provisionExpeditionLoot('beta', 3)).not.toEqual(first);
+	});
+
+	it('only generates sellable magic items and valuables with no draughts', () => {
+		const loot = provisionExpeditionLoot('sale-ready', 3);
+		expect(loot.every((item) => item.sellable === true)).toBe(true);
+		expect(loot.every((item) => item.source === 'starting')).toBe(true);
+		expect(loot.every((item) => item.kind === 'magic' || item.kind === 'valuable')).toBe(true);
+		expect(loot.some((item) => item.kind === 'draught')).toBe(false);
+		expect(loot.every((item) => settlementGold([item], 'settle', 1, 0) > 0)).toBe(true);
+	});
+
+	it('applies generated magic loot through normal inventory stat derivation', () => {
+		const loot = provisionExpeditionLoot('alpha', 1);
+		expect(loot[0].kind).toBe('magic');
+		const input = { body: 1, mind: 1, spirit: 1, level: 3, hp: 8, maxHp: 8, defense: 8 };
+		expect(deriveStats({ ...input, inventory: loot })).not.toEqual(deriveStats(input));
+	});
+
+	it('leaves room generation unchanged for a known seed', () => {
+		const input = {
+			seed: 'starting-loot-isolation',
+			room: 3,
+			turn: 0,
+			monsters: [],
+			traps: []
+		};
+		const before = generateRoom(input);
+		provisionExpeditionLoot(input.seed, 3);
+		expect(generateRoom(input)).toEqual(before);
+	});
+});
+
+describe('abandonSettlementGold', () => {
+	const starting = (name: string): InventoryItem => ({ kind: 'valuable', name, source: 'starting' });
+	const unmarked = (name: string): InventoryItem => ({ kind: 'valuable', name });
+
+	it('pays nothing for an immediate abandon holding only starting loot', () => {
+		expect(abandonSettlementGold([starting('A')], 'ab', 1, 0)).toBe(0);
+	});
+
+	it('still sells nonstarting items in a mixed immediate abandon', () => {
+		const mixed = [starting('A'), unmarked('B')];
+		const gold = abandonSettlementGold(mixed, 'ab', 1, 0);
+		expect(gold).toBeGreaterThan(0);
+		expect(gold).toBe(settlementGold([unmarked('B')], 'ab', 1, 0));
+	});
+
+	it('sells starting loot once a player turn has resolved', () => {
+		const item = starting('A');
+		expect(abandonSettlementGold([item], 'ab', 1, 1)).toBe(settlementGold([item], 'ab', 1, 1));
+		expect(abandonSettlementGold([item], 'ab', 1, 1)).toBeGreaterThan(0);
+	});
+
+	it('sells starting loot in a fatal settlement after an action', () => {
+		const item = starting('A');
+		expect(settlementGold([item], 'fatal', 2, 1)).toBeGreaterThan(0);
+	});
+
+	it('leaves historical unmarked items selling unchanged on immediate abandon', () => {
+		const item = unmarked('A');
+		expect(abandonSettlementGold([item], 'ab', 1, 0)).toBe(settlementGold([item], 'ab', 1, 0));
 	});
 });
 

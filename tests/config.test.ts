@@ -84,7 +84,11 @@ describe('intFromEnv', () => {
 
 describe('loadConfig', () => {
 	it('uses the configured integer value when valid', async () => {
-		const cfg = await loadConfigWithEnv({ LLM_MAX_RESPONSE_BYTES: '1048576' });
+		const cfg = await loadConfigWithEnv({
+			LLM_MAX_TOKENS: '2400',
+			LLM_MAX_RESPONSE_BYTES: '1048576'
+		});
+		expect(cfg.LLM_MAX_TOKENS).toBe(2400);
 		expect(cfg.LLM_MAX_RESPONSE_BYTES).toBe(1048576);
 	});
 
@@ -96,9 +100,9 @@ describe('loadConfig', () => {
 	it('falls back to defaults when int vars are unset', async () => {
 		const cfg = await loadConfigWithEnv({});
 		expect(cfg.PORT).toBe(3000);
-		expect(cfg.LLM_MAX_TOKENS).toBe(600);
+		expect(cfg.LLM_MAX_TOKENS).toBe(1600);
 		expect(cfg.LLM_TIMEOUT_MS).toBe(20000);
-		expect(cfg.LLM_MAX_RESPONSE_BYTES).toBe(8192);
+		expect(cfg.LLM_MAX_RESPONSE_BYTES).toBe(262144);
 	});
 
 	it('rejects formatted, non-numeric, and zero values and reports the offending key', async () => {

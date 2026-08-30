@@ -197,8 +197,10 @@ export interface InventoryItem {
 	stat?: MagicStat;
 	skill?: SkillName;
 	value?: number;
-	/** Explicitly false for persistent gear, which must never be sold at settlement. */
+	/** Explicitly false for legacy items that must not be sold at settlement. */
 	sellable?: boolean;
+	/** Identifies loot granted at expedition start; used to block immediate-abandon farming. */
+	source?: 'starting';
 }
 
 export interface RollRecord {

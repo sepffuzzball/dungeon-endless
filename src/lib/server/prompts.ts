@@ -44,6 +44,35 @@ function clampLevel(level: number, length: number): number {
 	return Math.max(0, Math.min(length - 1, index));
 }
 
+function clampSlider(level: number | undefined): number {
+	if (level === undefined || !Number.isFinite(level)) return 1;
+	return Math.max(1, Math.min(5, Math.floor(level)));
+}
+
+/** Resolves the requested prose length without changing any authoritative outcome state. */
+export function resolveNarrationParagraphTarget(input: {
+	narrationMode?: TurnNarrationMode;
+	roomType: RoomSnapshot['type'];
+	outcome: TurnOutcome;
+	brutality?: number;
+	debauchery?: number;
+}): number {
+	const mode = normalizeNarrationMode(input.narrationMode);
+	const finalDefeat = input.outcome.result === 'defeat' || input.outcome.hpAfter <= 0;
+	if (mode === 'failure_consequence') {
+		return clampSlider(input.debauchery) + (input.roomType === 'boss' || finalDefeat ? 2 : 0);
+	}
+	if (
+		mode === 'ordinary_action' &&
+		(input.outcome.result === 'failure' ||
+			input.outcome.result === 'defeat' ||
+			input.outcome.hpAfter <= 0)
+	) {
+		return clampSlider(input.brutality);
+	}
+	return 2;
+}
+
 /** Returns the brutality directive for a 1-based level (1..5), clamped to the valid range. */
 export function brutalityPrompt(level: number): string {
 	return BRUTALITY_PROMPTS[clampLevel(level, BRUTALITY_PROMPTS.length)] ?? BRUTALITY_PROMPTS[0];
@@ -161,26 +190,46 @@ export function composeProse(input: {
 	outcome: TurnOutcome;
 	rolls?: RollRecord[];
 	narrationMode?: TurnNarrationMode;
+	brutality?: number;
+	debauchery?: number;
 }): ComposedPrompt {
 	const mode = normalizeNarrationMode(input.narrationMode);
+	const target = resolveNarrationParagraphTarget({
+		narrationMode: mode,
+		roomType: input.room.type,
+		outcome: input.outcome,
+		brutality: input.brutality,
+		debauchery: input.debauchery
+	});
+	const failedOrdinary =
+		mode === 'ordinary_action' &&
+		(input.outcome.result === 'failure' ||
+			input.outcome.result === 'defeat' ||
+			input.outcome.hpAfter <= 0);
 	const instructions =
 		mode === 'loot_search'
 			? [
-					'Describe searching the already-resolved room and finding exactly the items in outcome.rewards, in one or two substantial in-world paragraphs.',
+					`Describe searching the already-resolved room and finding exactly the items in outcome.rewards, in exactly ${target} substantial in-world paragraphs.`,
 					'Do not invent, omit, rename, or add properties to items. Do not invent traps, gold, combat, enemies, checks, damage, or other mechanics. A draught in rewards was found and consumed; carriedRewards contains only items placed in inventory.',
 					'The room snapshot carries no reward pool; the authoritative outcome.rewards is the only source of discovered items.'
 				]
 			: mode === 'failure_consequence'
 				? [
-						'Describe only the aftermath and punishment of the already-resolved failure in one or two substantial in-world paragraphs, consistent with the authoritative outcome, HP delta, recorded injury, and brutality directive.',
-						'Do not add mechanics, damage, injury, permanent harm, dismemberment, or death. Debauchery may contribute clearly adult, consensual decadent or humiliating atmosphere only when supported by the supplied scene; never include coercion, sexual violence, sexualized punishment or defeat, or minors or ambiguous adulthood.',
+						`Write exactly ${target} distinct substantial paragraphs of aftermath and punishment consistent with the recorded outcome, HP delta, recorded injury, and brutality directive.`,
+						'Boss or final-defeat extra length is for drama only, never extra mechanics, injury, harm, or death. Do not add mechanics, damage, injury, permanent harm, dismemberment, or death. Debauchery controls length here, but may contribute clearly adult, consensual decadent or humiliating atmosphere only when supported by the supplied scene; never include coercion, sexual violence, coercive sexual punishment, sexualized punishment or defeat, minors, or ambiguous adulthood.',
 						HIDDEN_REWARDS_RULE
 					]
-				: [
-						'Describe the following scene and its outcome in vivid, in-world prose, in exactly two substantial paragraphs. Stay strictly within the brutality and debauchery directives.',
-						'Paragraph one shows the submitted action unfolding as a physical sequence and the opponent or hazard responding. Paragraph two shows the exact authoritative outcome and its aftermath, with any wound or consequence consistent with the HP delta, injury, and brutality, and with the roll margin. Never reverse a success or failure, and never invent state, rewards, or injuries beyond what the outcome records.',
-						HIDDEN_REWARDS_RULE
-					];
+				: failedOrdinary
+					? [
+							`Write exactly ${target} distinct substantial paragraphs depicting the failed action, the opponent or hazard response, the beatdown and consequences, the recorded injury, and the aftermath. Stay strictly within the brutality and debauchery directives.`,
+							'Do not invent damage, state, injury, permanent harm, dismemberment, or death. Keep every detail consistent with the authoritative outcome, HP delta, recorded injury, and roll margin; never reverse the failure.',
+							HIDDEN_REWARDS_RULE
+						]
+					: [
+							`Describe the following scene and its outcome in vivid, in-world prose, in exactly ${target} substantial paragraphs. Stay strictly within the brutality and debauchery directives.`,
+							'Paragraph one shows the submitted action unfolding as a physical sequence and the opponent or hazard responding. Paragraph two shows the exact authoritative outcome and its aftermath, with any wound or consequence consistent with the HP delta, injury, and brutality, and with the roll margin. Never reverse a success or failure, and never invent state, rewards, or injuries beyond what the outcome records.',
+							HIDDEN_REWARDS_RULE
+						];
 	const user = [
 		...instructions,
 		boundedDelimit('room', serializeRoomForPrompt(input.room), PROSE_LIMITS.roomChars),

@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { CharacterCard, DashboardAchievement, RunSummary } from '$lib/types';
 import { requireUser } from '$lib/server/authorization';
 import { db } from '$lib/server/db';
-import { deriveStatBreakdowns, deriveStats, provisionPersistentGear } from '$lib/server/game';
+import { deriveStatBreakdowns, deriveStats } from '$lib/server/game';
 import { achievements, characters, runs, userAchievements, users } from '$lib/server/schema';
 import type { PageServerLoad } from './$types';
 
@@ -29,7 +29,7 @@ export const load: PageServerLoad = async (event) => {
 			hp: 0,
 			maxHp: 0,
 			defense: 5 + row.level,
-			inventory: provisionPersistentGear(row.gearBonus)
+			inventory: []
 		};
 		const stats = deriveStats(input);
 		return {

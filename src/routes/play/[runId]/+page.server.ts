@@ -17,6 +17,7 @@ import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import {
 	checkedCompanyGoldAdd,
+	abandonSettlementGold,
 	applyLoot,
 	classifyEncounterOutcome,
 	deriveStatBreakdowns,
@@ -138,7 +139,9 @@ async function ownedRun(runId: string, userId: string) {
 async function finalizeTurnFallback(
 	tx: Transaction,
 	turn: typeof turns.$inferSelect,
-	correlationId: string
+	correlationId: string,
+	brutality: number,
+	debauchery: number
 ) {
 	const narrationMode = normalizeNarrationMode(turn.intent.narrationMode);
 	const summary = fallbackSummary(turn.roomSnapshot, turn.actionText, turn.outcome, narrationMode);
@@ -147,7 +150,9 @@ async function finalizeTurnFallback(
 		turn.actionText,
 		turn.outcome,
 		Array.isArray(turn.rolls) ? turn.rolls : [],
-		narrationMode
+		narrationMode,
+		brutality,
+		debauchery
 	);
 	const finalized = await tx
 		.update(turns)
@@ -570,7 +575,13 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 						!enhanced &&
 						(duplicate.narrationStatus === 'pending' || duplicate.narrationStatus === 'streaming')
 					) {
-						const recovered = await finalizeTurnFallback(tx, duplicate, correlationId);
+						const recovered = await finalizeTurnFallback(
+							tx,
+							duplicate,
+							correlationId,
+							run.brutality,
+							run.debauchery
+						);
 						recoveryDiagnostics.push(...recovered.diagnostics);
 					}
 					return done({ kind: 'duplicate', turnId: duplicate.id, version: duplicate.sequence });
@@ -634,7 +645,13 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 							message: 'Wait for the encounter narration to finish before continuing.'
 						});
 					}
-					const recovered = await finalizeTurnFallback(tx, prior, correlationId);
+					const recovered = await finalizeTurnFallback(
+						tx,
+						prior,
+						correlationId,
+						run.brutality,
+						run.debauchery
+					);
 					recoveryDiagnostics.push(...recovered.diagnostics);
 				}
 
@@ -692,7 +709,17 @@ async function followupAction(event: RequestEvent, mode: FollowupMode) {
 						roomSnapshot: { ...structuredClone(run.roomData), roomNumber: run.roomNumber },
 						rolls: [],
 						outcome,
-						narration: enhanced ? '' : fallbackProse(run.roomData, actionText, outcome, [], mode),
+						narration: enhanced
+							? ''
+							: fallbackProse(
+									run.roomData,
+									actionText,
+									outcome,
+									[],
+									mode,
+									run.brutality,
+									run.debauchery
+								),
 						narrationStatus: enhanced ? 'pending' : 'complete',
 						narrationUpdatedAt: enhanced ? null : new Date(),
 						turnSummary: summary
@@ -828,7 +855,13 @@ export const actions: Actions = {
 								duplicate.narrationStatus === 'pending' ||
 								duplicate.narrationStatus === 'streaming'
 							) {
-								const recovered = await finalizeTurnFallback(tx, duplicate, correlationId);
+								const recovered = await finalizeTurnFallback(
+									tx,
+									duplicate,
+									correlationId,
+									run.brutality,
+									run.debauchery
+								);
 								recoveryDiagnostics.push(...recovered.diagnostics);
 							}
 						}
@@ -959,7 +992,9 @@ export const actions: Actions = {
 										actionText,
 										encounter.outcome,
 										encounter.rolls,
-										intent.narrationMode
+										intent.narrationMode,
+										run.brutality,
+										run.debauchery
 									),
 							narrationStatus: enhanced ? 'pending' : 'complete',
 							narrationUpdatedAt: enhanced ? null : new Date(),
@@ -1123,7 +1158,13 @@ export const actions: Actions = {
 								turn &&
 								(turn.narrationStatus === 'pending' || turn.narrationStatus === 'streaming')
 							) {
-								const recovered = await finalizeTurnFallback(tx, turn, correlationId);
+								const recovered = await finalizeTurnFallback(
+									tx,
+									turn,
+									correlationId,
+									run.brutality,
+									run.debauchery
+								);
 								summary = recovered.summary;
 								recoveryDiagnostics.push(...recovered.diagnostics);
 							}
@@ -1178,7 +1219,13 @@ export const actions: Actions = {
 								message: 'Wait for the action narration to finish before proceeding.'
 							});
 						}
-						const recovered = await finalizeTurnFallback(tx, turn, correlationId);
+						const recovered = await finalizeTurnFallback(
+							tx,
+							turn,
+							correlationId,
+							run.brutality,
+							run.debauchery
+						);
 						summary = recovered.summary;
 						recoveryDiagnostics.push(...recovered.diagnostics);
 					}
@@ -1307,7 +1354,12 @@ export const actions: Actions = {
 					.for('update');
 				if (!account) return { status: 404, message: 'Company not found.' };
 
-				const gold = settlementGold(run.inventory, run.seed, run.roomNumber, run.version);
+				const gold = abandonSettlementGold(
+					run.inventory,
+					run.seed,
+					run.roomNumber,
+					run.version
+				);
 				await tx
 					.update(characters)
 					.set({

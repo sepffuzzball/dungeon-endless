@@ -17,6 +17,7 @@ import { config } from '../src/lib/server/config';
 import { LlmFailure, LLM_FALLBACK_LOG_PREFIX } from '../src/lib/server/llm-diagnostics';
 import {
 	OpenAiSseDecoder,
+	callChat,
 	callChatStream,
 	fallbackProse,
 	fallbackRoomEntry,
@@ -61,6 +62,10 @@ async function collect(stream: AsyncGenerator<StreamChunk>): Promise<string> {
 	return text;
 }
 
+function paragraphs(text: string): string[] {
+	return text.split(/\n\n/).filter((paragraph) => paragraph.trim().length > 0);
+}
+
 const proseInput = {
 	system: 'system',
 	room: { type: 'monster' as const, name: 'Watcher' },
@@ -86,6 +91,95 @@ const roll = (total: number, target: number) => ({
 });
 
 describe('deterministic prose fallbacks', () => {
+	it.each([1, 2, 3, 4, 5])(
+		'generates exactly brutality %i paragraphs for nonfatal and fatal initial failures',
+		(level) => {
+			for (const outcome of [
+				{
+					result: 'failure' as const,
+					hpBefore: 5,
+					hpAfter: 4,
+					hpDelta: -1,
+					message: 'The watcher drives you back.'
+				},
+				{
+					result: 'defeat' as const,
+					hpBefore: 1,
+					hpAfter: 0,
+					hpDelta: -1,
+					message: 'The watcher defeats you.'
+				}
+			]) {
+				const text = fallbackProse(
+					{ type: 'monster', name: 'Watcher' },
+					'I attack',
+					outcome,
+					[roll(2, 8)],
+					'ordinary_action',
+					level,
+					5
+				);
+				expect(paragraphs(text)).toHaveLength(level);
+				expect(text).not.toMatch(/sexual|coerc/i);
+			}
+		}
+	);
+
+	it.each([1, 2, 3, 4, 5])(
+		'generates exact debauchery %i consequence targets with one boss/final bonus',
+		(level) => {
+			const render = (
+				roomType: 'monster' | 'boss',
+				result: 'failure' | 'defeat',
+				hpAfter: number
+			) =>
+				fallbackProse(
+					{ type: roomType, name: 'Watcher' },
+					'face the aftermath',
+					{
+						result,
+						hpBefore: hpAfter,
+						hpAfter,
+						hpDelta: 0,
+						message: 'The settled outcome remains.'
+					},
+					[],
+					'failure_consequence',
+					5,
+					level
+				);
+			expect(paragraphs(render('monster', 'failure', 4))).toHaveLength(level);
+			expect(paragraphs(render('boss', 'failure', 4))).toHaveLength(level + 2);
+			expect(paragraphs(render('monster', 'defeat', 0))).toHaveLength(level + 2);
+			const bossFinal = render('boss', 'defeat', 0);
+			expect(paragraphs(bossFinal)).toHaveLength(level + 2);
+			expect(bossFinal).not.toMatch(/sexual|coerc/i);
+		}
+	);
+
+	it('keeps success and loot fallbacks at two paragraphs', () => {
+		const success = fallbackProse(
+			{ type: 'monster', name: 'Watcher' },
+			'I attack',
+			proseInput.outcome,
+			[],
+			'ordinary_action',
+			5,
+			5
+		);
+		const loot = fallbackProse(
+			{ type: 'monster', name: 'Watcher' },
+			'search',
+			{ ...proseInput.outcome, result: 'reward', rewards: [], carriedRewards: [] },
+			[],
+			'loot_search',
+			5,
+			5
+		);
+		expect(paragraphs(success)).toHaveLength(2);
+		expect(paragraphs(loot)).toHaveLength(2);
+	});
+
 	it('writes the submitted action as its own sentence before a successful near-roll outcome', () => {
 		const text = fallbackProse(
 			{ type: 'monster', name: 'Watcher' },
@@ -114,7 +208,7 @@ describe('deterministic prose fallbacks', () => {
 			},
 			[roll(3, 8)]
 		);
-		expect(text).toMatch(/^You leap across\.\n\n/);
+		expect(text).toMatch(/^You leap across\./);
 		expect(text).toContain('a wide result by 5');
 		expect(text).toContain('falling from 5 to 4');
 		expect(text).toContain('The recorded injury is a punctured heel');
@@ -302,6 +396,92 @@ describe('streaming helpers', () => {
 			)
 		);
 		expect(await collect(callChatStream(endpoint(), []))).toBe('hello');
+	});
+
+	it('rejects a non-streaming answer whose finish reason reports token truncation', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom([
+					JSON.stringify({
+						choices: [{ message: { content: 'partial answer' }, finish_reason: 'length' }]
+					})
+				])
+			)
+		);
+		await expect(callChat(endpoint(), [])).rejects.toMatchObject({
+			reason: 'response_truncated'
+		});
+	});
+
+	it('accepts a voluntarily short non-streaming answer with finish reason stop', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom([
+					JSON.stringify({ choices: [{ message: { content: 'brief' }, finish_reason: 'stop' }] })
+				])
+			)
+		);
+		await expect(callChat(endpoint(), [])).resolves.toBe('brief');
+	});
+
+	it('rejects a non-streaming answer whose finish reason is not plain completion', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom([
+					JSON.stringify({
+						choices: [
+							{ message: { content: 'partial answer' }, finish_reason: 'content_filter' }
+						]
+					})
+				])
+			)
+		);
+		await expect(callChat(endpoint(), [])).rejects.toMatchObject({
+			reason: 'response_incomplete'
+		});
+	});
+
+	it('throws typed truncation after SSE content when finish reason is length', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom([
+					'data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+					'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+					'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'
+				])
+			)
+		);
+		const seen: string[] = [];
+		await expect(
+			(async () => {
+				for await (const chunk of callChatStream(endpoint(), [])) seen.push(chunk.content);
+			})()
+		).rejects.toMatchObject({ reason: 'response_truncated' });
+		expect(seen.join('')).toBe('partial');
+	});
+
+	it('throws typed incompletion after SSE content when finish reason is not plain', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				responseFrom([
+					'data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n',
+					'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+					'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n'
+				])
+			)
+		);
+		const seen: string[] = [];
+		await expect(
+			(async () => {
+				for await (const chunk of callChatStream(endpoint(), [])) seen.push(chunk.content);
+			})()
+		).rejects.toMatchObject({ reason: 'response_incomplete' });
+		expect(seen.join('')).toBe('partial');
 	});
 
 	it('uses only the first enabled prose endpoint and falls back when it fails before output', async () => {

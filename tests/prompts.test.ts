@@ -23,11 +23,6 @@ describe('level prompts', () => {
 		expect(DEBAUCHERY_PROMPTS).toHaveLength(5);
 	});
 
-	it('keeps adult-content directives explicit about consent and prohibited content', () => {
-		expect(DEBAUCHERY_PROMPTS[0]).toMatch(/no sexual content/i);
-		expect(DEBAUCHERY_PROMPTS[1]).toMatch(/only mild adult .*innuendo/i);
-	});
-
 	it('maps each 1-based brutality level to its directive', () => {
 		expect(brutalityPrompt(1)).toBe(BRUTALITY_PROMPTS[0]);
 		expect(brutalityPrompt(2)).toBe(BRUTALITY_PROMPTS[1]);

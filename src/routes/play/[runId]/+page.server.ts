@@ -95,6 +95,8 @@ function systemPrompt(run: typeof runs.$inferSelect, character: typeof character
 			title: character.title,
 			species: character.species,
 			className: character.className,
+			pronouns: character.pronouns,
+			genderIdentity: character.genderIdentity,
 			level: run.meta.startLevel ?? run.roomData.run?.startLevel ?? character.level
 		}
 	});
@@ -377,7 +379,6 @@ export const load: PageServerLoad = async (event) => {
 		hp: owned.run.hp,
 		maxHp: owned.run.maxHp,
 		defense: 5 + level,
-		attackBonus: baseStats.body + level,
 		inventory: owned.run.inventory
 	});
 	const breakdowns = deriveStatBreakdowns({
@@ -388,7 +389,6 @@ export const load: PageServerLoad = async (event) => {
 		hp: owned.run.hp,
 		maxHp: owned.run.maxHp,
 		defense: 5 + level,
-		attackBonus: baseStats.body + level,
 		inventory: owned.run.inventory
 	});
 
@@ -444,6 +444,8 @@ export const load: PageServerLoad = async (event) => {
 		character: {
 			name: owned.character.name,
 			title: owned.character.title,
+			pronouns: owned.character.pronouns,
+			genderIdentity: owned.character.genderIdentity,
 			className: owned.character.className,
 			species: owned.character.species,
 			level,
@@ -921,7 +923,6 @@ export const actions: Actions = {
 						hp: run.hp,
 						maxHp: run.maxHp,
 						defense: 5 + level,
-						attackBonus: baseStats.body + level,
 						inventory: run.inventory
 					});
 					const encounter = resolveEncounter({

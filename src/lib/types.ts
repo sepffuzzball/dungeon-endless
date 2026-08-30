@@ -14,6 +14,25 @@ export type ActionMethod = 'combat' | 'skill' | 'none';
 export type NarrationStatus = 'pending' | 'streaming' | 'complete' | 'failed';
 export type TurnNarrationMode = 'ordinary_action' | 'loot_search' | 'failure_consequence';
 
+export const PRONOUN_SUGGESTIONS = [
+	'he/him/his',
+	'she/her/hers',
+	'they/them/theirs',
+	'it/its',
+	'ze/zir/zirs',
+	'xe/xem/xyrs'
+] as const;
+export const GENDER_PRESENTATION_SUGGESTIONS = [
+	'male',
+	'female',
+	'non-binary',
+	'femboy',
+	'tomgirl',
+	'agender',
+	'genderfluid',
+	'androgynous'
+] as const;
+
 /** Editor-managed body build choices offered during character creation. */
 export const BUILD_OPTIONS = [
 	'Lean',
@@ -65,6 +84,8 @@ export interface CharacterRow {
 	name: string;
 	title: string;
 	description: string;
+	pronouns: string;
+	genderIdentity: string;
 	imageUrl: string | null;
 	age: number;
 	height: string;
@@ -266,6 +287,8 @@ export interface CharacterCard {
 	id: string;
 	name: string;
 	title: string;
+	pronouns: string;
+	genderIdentity: string;
 	species: string;
 	className: string;
 	level: number;
@@ -405,6 +428,8 @@ export interface DashboardAchievement {
 export interface PlayCharacter {
 	name: string;
 	title: string;
+	pronouns: string;
+	genderIdentity: string;
 	className: string;
 	species: string;
 	level: number;

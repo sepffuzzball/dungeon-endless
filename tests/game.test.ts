@@ -128,13 +128,13 @@ describe('deriveStats', () => {
 			level: 1,
 			hp: 9,
 			maxHp: 12,
-			defense: 9,
-			attackBonus: 1
+			defense: 9
 		});
 		expect(stats.body).toBe(2);
 		expect(stats.mind).toBe(3);
 		expect(stats.spirit).toBe(4);
 		expect(stats.instinct).toBe(9);
+		expect(stats.attackBonus).toBe(9);
 		expect(stats.skillValues.Athletics).toBe(2);
 		expect(stats.skillValues.Magic).toBe(3);
 		expect(stats.skillValues.Willpower).toBe(4);
@@ -154,7 +154,6 @@ describe('deriveStats', () => {
 			hp: 10,
 			maxHp: 10,
 			defense: 10,
-			attackBonus: 1,
 			inventory: items
 		});
 		expect(stats.body).toBe(6);
@@ -174,7 +173,6 @@ describe('deriveStats', () => {
 			hp: 10,
 			maxHp: 10,
 			defense: 10,
-			attackBonus: 1,
 			inventory: items
 		});
 		expect(stats.body).toBe(6); // 1 base + cap of 5
@@ -195,12 +193,82 @@ describe('deriveStats', () => {
 			hp: 10,
 			maxHp: 10,
 			defense: 10,
-			attackBonus: 1,
 			inventory: items
 		});
-		expect(stats.attackBonus).toBe(2);
+		expect(stats.attackBonus).toBe(10);
 		expect(stats.defense).toBe(11);
 		expect(stats.skillValues.Magic).toBe(4);
+	});
+
+	it('does not add level to Attack', () => {
+		const source = { body: 2, mind: 1, spirit: 1, hp: 10, maxHp: 10, defense: 10 };
+		expect(deriveStats({ ...source, level: 1 }).attackBonus).toBe(4);
+		expect(deriveStats({ ...source, level: 10 }).attackBonus).toBe(4);
+	});
+
+	it('adds attribute and general gear exactly once through effective attributes', () => {
+		const stats = deriveStats({
+			body: 1,
+			mind: 1,
+			spirit: 1,
+			level: 3,
+			hp: 10,
+			maxHp: 10,
+			defense: 8,
+			inventory: [
+				{ kind: 'magic', name: 'Body', stat: 'body' },
+				{ kind: 'magic', name: 'Mind', stat: 'mind' },
+				{ kind: 'magic', name: 'Spirit', stat: 'spirit' },
+				{ kind: 'magic', name: 'General', stat: 'general' },
+				{ kind: 'magic', name: 'Weapon', stat: 'attack' }
+			]
+		});
+		expect({ body: stats.body, mind: stats.mind, spirit: stats.spirit }).toEqual({
+			body: 3,
+			mind: 3,
+			spirit: 3
+		});
+		expect(stats.instinct).toBe(9);
+		expect(stats.attackBonus).toBe(10);
+	});
+
+	it('caps each primary equipment contribution before Attack is summed', () => {
+		const inventory: InventoryItem[] = Array.from({ length: 8 }, (_, index) => ({
+			kind: 'magic',
+			name: `General ${index}`,
+			stat: 'general'
+		}));
+		const stats = deriveStats({
+			body: 1,
+			mind: 2,
+			spirit: 3,
+			level: 6,
+			hp: 10,
+			maxHp: 10,
+			defense: 11,
+			inventory
+		});
+		expect(stats.attackBonus).toBe(21);
+	});
+
+	it('uses the corrected Attack value as the combat roll modifier', () => {
+		const stats = deriveStats({
+			body: 2,
+			mind: 1,
+			spirit: 1,
+			level: 9,
+			hp: 10,
+			maxHp: 10,
+			defense: 14,
+			inventory: [{ kind: 'magic', name: 'Weapon', stat: 'attack' }]
+		});
+		const encounter = resolve(
+			room({ type: 'monster', defense: 99 }),
+			{ method: 'combat', advantage: 0 },
+			stats
+		);
+		expect(encounter.rolls[0]?.modifier).toBe(5);
+		expect(encounter.rolls[0]?.total).toBe((encounter.rolls[0]?.selected ?? 0) + 5);
 	});
 });
 
@@ -213,7 +281,6 @@ describe('deriveStatBreakdowns', () => {
 		hp: 8,
 		maxHp: 10,
 		defense: 9,
-		attackBonus: 6,
 		inventory,
 		gearCap
 	});
@@ -247,7 +314,17 @@ describe('deriveStatBreakdowns', () => {
 		const breakdowns = deriveStatBreakdowns(source);
 		expect(breakdowns.attributes.body.parts.map((part) => part.value)).toEqual([2, 0, 0]);
 		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 4, 0]);
-		expect(breakdowns.attack.parts.map((part) => part.value)).toEqual([2, 4, 0]);
+		expect(breakdowns.attack.parts).toEqual([
+			{ label: 'Effective Body', value: 2 },
+			{ label: 'Effective Mind', value: 3 },
+			{ label: 'Effective Spirit', value: 1 },
+			{ label: 'Attack equipment', value: 0 }
+		]);
+		expect(breakdowns.attack.formula).toContain('(Instinct) + Attack equipment');
+		expect(breakdowns.instinct.formula).toBe(
+			'Effective Body + Effective Mind + Effective Spirit; forms the attribute portion of Attack.'
+		);
+		expect(breakdowns.instinct.formula).not.toContain('does not drive checks');
 	});
 
 	it('aggregates general, attribute, skill, attack and defense gear in authoritative parts', () => {
@@ -264,10 +341,10 @@ describe('deriveStatBreakdowns', () => {
 		const breakdowns = deriveStatBreakdowns(source);
 		expect(breakdowns.attributes.body.parts.map((part) => part.value)).toEqual([2, 2, 1]);
 		expect(breakdowns.skills.Athletics.parts.map((part) => part.value)).toEqual([5, 2]);
-		expect(breakdowns.attack.parts.map((part) => part.value)).toEqual([2, 4, 1]);
+		expect(breakdowns.attack.parts.map((part) => part.value)).toEqual([5, 5, 3, 1]);
 		expect(breakdowns.defense.parts.map((part) => part.value)).toEqual([5, 4, 1]);
-		// General and Body gear improve skills through effective Body, never authoritative Attack.
-		expect(breakdowns.attack.total).toBe(7);
+		// General and Body gear improve Attack exactly once through effective attributes.
+		expect(breakdowns.attack.total).toBe(14);
 	});
 
 	it('accounts explicitly for primary equipment discarded by the cap', () => {
@@ -937,10 +1014,9 @@ describe('post-encounter loot foundation', () => {
 				hp: applied.hpAfter,
 				maxHp: 10,
 				defense: 6,
-				attackBonus: 2,
 				inventory: applied.inventory
 			}).attackBonus
-		).toBe(3);
+		).toBe(2);
 		expect(applyLoot([], 10, 10, { carried: [], consumedDraughtCount: 1 }).hpDelta).toBe(0);
 	});
 

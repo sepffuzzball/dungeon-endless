@@ -109,6 +109,8 @@ export const characters = pgTable(
 		name: text('name').notNull(),
 		title: text('title').notNull().default(''),
 		description: text('description').notNull().default(''),
+		pronouns: text('pronouns').notNull().default('he/him/his'),
+		genderIdentity: text('gender_identity').notNull().default('male'),
 		imageUrl: text('image_url'),
 		age: integer('age').notNull(),
 		height: text('height').notNull().default(''),
@@ -131,6 +133,16 @@ export const characters = pgTable(
 	(table) => [
 		index('characters_user_id_idx').on(table.userId),
 		check('characters_age_range', sql`${table.age} between 1 and 999`),
+		check(
+			'characters_pronouns_length',
+			sql`char_length(btrim(${table.pronouns})) between 1 and 80
+				and btrim(${table.pronouns}) !~ '[[:cntrl:]]'`
+		),
+		check(
+			'characters_gender_identity_length',
+			sql`char_length(btrim(${table.genderIdentity})) between 1 and 80
+				and btrim(${table.genderIdentity}) !~ '[[:cntrl:]]'`
+		),
 		check('characters_level_range', sql`${table.level} between 1 and 10`),
 		check('characters_body_range', sql`${table.body} between 0 and 4`),
 		check('characters_mind_range', sql`${table.mind} between 0 and 4`),

@@ -626,6 +626,7 @@ input[type='checkbox'] {
 }
 .badge {
 	display: inline-flex;
+	flex: 0 0 auto;
 	padding: 0.18rem 0.48rem;
 	border: 1px solid var(--line);
 	border-radius: 999px;
@@ -634,6 +635,9 @@ input[type='checkbox'] {
 	font-weight: 700;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
+	white-space: nowrap;
+	overflow-wrap: normal;
+	word-break: normal;
 }
 .badge.green {
 	color: #a9d3bc;
@@ -923,6 +927,10 @@ th {
 	font-size: 1.22rem;
 	white-space: pre-line;
 }
+.room-card > .prose-block {
+	width: 100%;
+	max-width: none;
+}
 .sr-only {
 	position: absolute;
 	width: 1px;
@@ -1086,6 +1094,9 @@ input:disabled {
 	display: flex;
 	justify-content: space-between;
 	gap: 0.5rem;
+}
+.inventory-list li > div:first-child > strong {
+	min-width: 0;
 }
 .inventory-list p {
 	margin: 0.45rem 0;

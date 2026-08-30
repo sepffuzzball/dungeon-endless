@@ -341,6 +341,8 @@ describe('streaming helpers', () => {
 				description: '',
 				height: 'Tall',
 				build: 'Lean',
+				pronouns: 'he/him/his',
+				genderIdentity: 'male',
 				species: 'Human',
 				calling: 'Warden',
 				stats: { body: 1, mind: 0, spirit: 0 }
@@ -566,6 +568,8 @@ describe('fallback diagnostics', () => {
 						description: '',
 						height: 'Tall',
 						build: 'Lean',
+						pronouns: 'he/him/his',
+						genderIdentity: 'male',
 						species: 'Human',
 						calling: 'Warden',
 						stats: { body: 1, mind: 0, spirit: 0 }

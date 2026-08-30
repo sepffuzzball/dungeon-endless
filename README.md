@@ -119,13 +119,13 @@ JavaScript-enhanced actions return one exact durable narration ID: acting and fo
 
 ### Characters, progression, and expeditions
 
-- A character profile starts with exactly one point split across Body, Mind, and Spirit, each 0 or 1. Species and calling choices are editor-managed snapshots; build and height use fixed choices, and profiles can include a 2000-character description.
+- A character profile starts with exactly one point split across Body, Mind, and Spirit, each 0 or 1. Species and calling choices are editor-managed snapshots; build and height use fixed choices, profiles can include a 2000-character description, and free-text pronouns plus gender/presentation provide respectful narrative context without changing rules.
 - Character level and stats are permanent. Each level adds one stat point; stats are capped at 3 through level 9, while level 10 permits at most one stat at 4. Reaching levels 2 through 10 costs 20 through 100 company gold.
 - Permanent company gear tiers +1 through +3 cost 25, 75, and 225 company gold. Gear is materialized into each new run as explicitly non-sellable inventory.
 - Starting-room access costs 5 company gold per one-room increase, to a maximum of 1000. Starting an expedition itself is free and may use any room from 1 through that character's unlocked maximum.
 - New rules-version-2 expeditions snapshot the character's level, stats, gear, starting room, and company settings. Later edits and upgrades cannot change an active run. Legacy rules-version-1 runs continue using their saved charter metadata, inventory, HP, and settings.
 - Retirement is irreversible and is blocked while a character has an active expedition. Retired characters leave normal rosters and cannot be edited, upgraded, or sent on new expeditions; their completed runs and company records remain intact.
-- The play loop uses `5 + run level` base defense and `Body + run level` base attack. Magic gear can add to attack, defense, a primary stat, or a skill. Primary gear bonuses are capped at +5.
+- The play loop uses `5 + run level` base defense. Instinct is effective Body + effective Mind + effective Spirit, and Attack is Instinct + direct attack equipment; level has no separate Attack contribution. Attribute and general equipment affect Attack exactly once through effective attributes, whose equipment bonuses are capped at +5. Magic gear can also add directly to attack, defense, or a skill.
 
 ### Sliders
 

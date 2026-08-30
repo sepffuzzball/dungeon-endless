@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Portrait from '$lib/components/Portrait.svelte';
+	import { GENDER_PRESENTATION_SUGGESTIONS, PRONOUN_SUGGESTIONS } from '$lib/types';
 	let { data, form } = $props();
 	let retirementName = $state('');
 	let retirementAcknowledged = $state(false);
@@ -25,6 +26,16 @@
 				upgraded, or sent on a new expedition. Historical runs and company records remain preserved.
 			</p>
 		</div>
+		<dl class="identity-summary">
+			<div>
+				<dt>Gender / presentation</dt>
+				<dd>{data.character.genderIdentity}</dd>
+			</div>
+			<div>
+				<dt>Pronouns</dt>
+				<dd>{data.character.pronouns}</dd>
+			</div>
+		</dl>
 		<a class="btn btn-secondary" href="/characters">Return to active characters</a>
 	</section>
 {:else}
@@ -43,6 +54,32 @@
 			<label for="title"
 				>Title<input id="title" name="title" value={data.character.title} maxlength="60" /></label
 			>
+			<label for="pronouns"
+				>Pronouns<input
+					id="pronouns"
+					name="pronouns"
+					list="pronoun-suggestions"
+					value={data.character.pronouns}
+					required
+					maxlength="80"
+				/></label
+			>
+			<label for="genderIdentity"
+				>Gender / presentation <span class="field-hint">Custom values are welcome.</span><input
+					id="genderIdentity"
+					name="genderIdentity"
+					list="gender-presentation-suggestions"
+					value={data.character.genderIdentity}
+					required
+					maxlength="80"
+				/></label
+			>
+			<datalist id="pronoun-suggestions">
+				{#each PRONOUN_SUGGESTIONS as option}<option value={option}></option>{/each}
+			</datalist>
+			<datalist id="gender-presentation-suggestions">
+				{#each GENDER_PRESENTATION_SUGGESTIONS as option}<option value={option}></option>{/each}
+			</datalist>
 			<label for="description"
 				>Description<textarea id="description" name="description" maxlength="2000"
 					>{data.character.description}</textarea
@@ -177,6 +214,20 @@
 	.danger-zone p {
 		max-width: 68ch;
 		color: var(--muted);
+	}
+	.identity-summary {
+		display: grid;
+		gap: 0.65rem;
+		margin: 0;
+	}
+	.identity-summary dt {
+		color: var(--muted);
+		font-size: 0.72rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+	.identity-summary dd {
+		margin: 0.15rem 0 0;
 	}
 	.danger-zone {
 		margin-top: 1.5rem;

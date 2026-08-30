@@ -72,6 +72,9 @@
 					<div>
 						<h3>{character.name}</h3>
 						<div class="text-muted">{character.title}</div>
+						<small class="text-muted"
+							>{character.genderIdentity} &middot; {character.pronouns}</small
+						>
 						<small>{character.species} {character.className} / Level {character.level}</small>
 					</div>
 					<div class="mini-stats">

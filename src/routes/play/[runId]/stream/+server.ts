@@ -86,6 +86,8 @@ function prompt(run: typeof runs.$inferSelect, character: typeof characters.$inf
 			title: character.title,
 			species: character.species,
 			className: character.className,
+			pronouns: character.pronouns,
+			genderIdentity: character.genderIdentity,
 			level: run.meta.startLevel ?? run.roomData.run?.startLevel ?? character.level
 		}
 	});
@@ -562,7 +564,6 @@ export const GET: RequestHandler = async (event) => {
 							hp: run.hp,
 							maxHp: run.maxHp,
 							defense: 5 + level,
-							attackBonus: base.body + level,
 							inventory: run.inventory
 						});
 						for await (const chunk of streamRoomEntry({
@@ -575,6 +576,8 @@ export const GET: RequestHandler = async (event) => {
 								description: character.description,
 								height: character.height,
 								build: character.build,
+								pronouns: character.pronouns,
+								genderIdentity: character.genderIdentity,
 								species: character.species,
 								calling: character.className,
 								stats: { body: stats.body, mind: stats.mind, spirit: stats.spirit }

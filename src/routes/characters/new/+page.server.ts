@@ -4,7 +4,7 @@ import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
 import { callingDefinitions, characters, speciesDefinitions } from '$lib/server/schema';
 import { BUILD_OPTIONS, HEIGHT_OPTIONS } from '$lib/types';
-import { validCharacterAge, validImageUrl } from '$lib/server/game';
+import { normalizeCharacterIdentity, validCharacterAge, validImageUrl } from '$lib/server/game';
 import { and, eq } from 'drizzle-orm';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -45,6 +45,8 @@ export const actions: Actions = {
 		const name = text(form, 'name');
 		const title = text(form, 'title');
 		const description = text(form, 'description');
+		const pronouns = normalizeCharacterIdentity(text(form, 'pronouns'));
+		const genderIdentity = normalizeCharacterIdentity(text(form, 'genderIdentity'));
 		const imageUrl = text(form, 'imageUrl');
 		const species = text(form, 'species');
 		const className = text(form, 'className');
@@ -63,6 +65,11 @@ export const actions: Actions = {
 		}
 		if (description === null || description.length > 2000)
 			return fail(400, { error: 'Description must be no more than 2000 characters.' });
+		if (!pronouns || !genderIdentity)
+			return fail(400, {
+				error:
+					'Pronouns and gender / presentation must each be 1 to 80 characters without control characters.'
+			});
 		if (!species) return fail(400, { error: 'Choose an enabled species.' });
 		if (!className) return fail(400, { error: 'Choose an enabled calling.' });
 		if (age === null || !validCharacterAge(age)) {
@@ -116,6 +123,8 @@ export const actions: Actions = {
 			name,
 			title,
 			description,
+			pronouns,
+			genderIdentity,
 			imageUrl: imageUrl || null,
 			age,
 			height,

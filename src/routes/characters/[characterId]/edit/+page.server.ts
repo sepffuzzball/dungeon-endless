@@ -5,7 +5,7 @@ import { requireUser } from '$lib/server/authorization';
 import { retirementConfirmed } from '$lib/server/character-lifecycle';
 import { assertSameOrigin } from '$lib/server/csrf';
 import { db } from '$lib/server/db';
-import { validCharacterAge, validImageUrl } from '$lib/server/game';
+import { normalizeCharacterIdentity, validCharacterAge, validImageUrl } from '$lib/server/game';
 import { callingDefinitions, characters, runs, speciesDefinitions } from '$lib/server/schema';
 import { BUILD_OPTIONS, HEIGHT_OPTIONS } from '$lib/types';
 import type { Actions, PageServerLoad } from './$types';
@@ -65,6 +65,8 @@ export const actions: Actions = {
 		const name = text(form, 'name');
 		const title = text(form, 'title');
 		const description = text(form, 'description');
+		const pronouns = normalizeCharacterIdentity(text(form, 'pronouns'));
+		const genderIdentity = normalizeCharacterIdentity(text(form, 'genderIdentity'));
 		const imageUrl = text(form, 'imageUrl');
 		const species = text(form, 'species');
 		const className = text(form, 'className');
@@ -76,6 +78,11 @@ export const actions: Actions = {
 			return fail(400, { error: 'Name must be between 1 and 40 characters.' });
 		if (title === null || title.length > 60 || description === null || description.length > 2000)
 			return fail(400, { error: 'Title or description is too long.' });
+		if (!pronouns || !genderIdentity)
+			return fail(400, {
+				error:
+					'Pronouns and gender / presentation must each be 1 to 80 characters without control characters.'
+			});
 		if (!validCharacterAge(age))
 			return fail(400, { error: 'Age must be a whole number between 1 and 999.' });
 		if (imageUrl && !validImageUrl(imageUrl))
@@ -122,6 +129,8 @@ export const actions: Actions = {
 					name,
 					title,
 					description,
+					pronouns,
+					genderIdentity,
 					age,
 					height,
 					build,

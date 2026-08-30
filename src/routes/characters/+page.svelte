@@ -51,6 +51,9 @@
 							{character.title || 'Untitled'} / {character.species}
 							{character.className}
 						</p>
+						<small class="identity-line"
+							>{character.genderIdentity} &middot; {character.pronouns}</small
+						>
 					</div>
 					{#if character.activeRunId}<span class="badge green">In progress</span>{/if}
 				</div>

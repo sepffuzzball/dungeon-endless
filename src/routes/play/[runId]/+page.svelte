@@ -241,6 +241,9 @@
 				{data.character.title} / Level {data.character.level}
 				{data.character.className}
 			</p>
+			<small class="text-muted identity-line"
+				>{data.character.genderIdentity} &middot; {data.character.pronouns}</small
+			>
 			<div class="card-head vitality-head">
 				<strong>Vitality</strong><span>{data.character.hp} / {data.character.maxHp}</span>
 			</div>
@@ -316,8 +319,6 @@
 	<main class="stack play-main">
 		<article class="card room-card">
 			<div class="card-head">
-				{#if data.room.revealed && data.room.kind}<span class="badge red">{data.room.kind}</span
-					>{/if}
 				<span class="eyebrow">Room {data.room.number}</span>
 			</div>
 			<h2>{data.room.title}</h2>

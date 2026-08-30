@@ -29,7 +29,6 @@ export const load: PageServerLoad = async (event) => {
 			hp: 0,
 			maxHp: 0,
 			defense: 5 + row.level,
-			attackBonus: row.body + row.level,
 			inventory: provisionPersistentGear(row.gearBonus)
 		};
 		const stats = deriveStats(input);
@@ -37,6 +36,8 @@ export const load: PageServerLoad = async (event) => {
 			id: row.id,
 			name: row.name,
 			title: row.title,
+			pronouns: row.pronouns,
+			genderIdentity: row.genderIdentity,
 			species: row.species,
 			className: row.className,
 			level: row.level,

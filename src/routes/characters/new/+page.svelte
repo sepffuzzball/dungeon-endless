@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { GENDER_PRESENTATION_SUGGESTIONS, PRONOUN_SUGGESTIONS } from '$lib/types';
 	let { data, form } = $props();
 	let body = $state(0);
 	let mind = $state(0);
@@ -45,6 +46,26 @@
 				<label for="title"
 					>Title<input id="title" name="title" maxlength="60" placeholder="The Ashbound" /></label
 				>
+				<label for="pronouns"
+					>Pronouns<input
+						id="pronouns"
+						name="pronouns"
+						list="pronoun-suggestions"
+						value="he/him/his"
+						required
+						maxlength="80"
+					/></label
+				>
+				<label for="genderIdentity"
+					>Gender / presentation <span class="field-hint">Custom values are welcome.</span><input
+						id="genderIdentity"
+						name="genderIdentity"
+						list="gender-presentation-suggestions"
+						value="male"
+						required
+						maxlength="80"
+					/></label
+				>
 				<label for="species"
 					>Species<select id="species" name="species" required
 						>{#each data.species as item}<option value={item.name}>{item.name}</option
@@ -79,6 +100,12 @@
 					></label
 				>
 			</div>
+			<datalist id="pronoun-suggestions">
+				{#each PRONOUN_SUGGESTIONS as option}<option value={option}></option>{/each}
+			</datalist>
+			<datalist id="gender-presentation-suggestions">
+				{#each GENDER_PRESENTATION_SUGGESTIONS as option}<option value={option}></option>{/each}
+			</datalist>
 			<label for="description"
 				>Description <span class="field-hint">Appearance, history, manner, or ambitions.</span
 				><textarea id="description" name="description" maxlength="2000"></textarea></label

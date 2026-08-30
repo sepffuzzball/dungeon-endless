@@ -45,7 +45,6 @@ export const load: PageServerLoad = async (event) => {
 			hp: 0,
 			maxHp: 0,
 			defense: 5 + character.level,
-			attackBonus: character.body + character.level,
 			inventory: provisionPersistentGear(character.gearBonus)
 		};
 		const stats = deriveStats(input);
@@ -53,6 +52,8 @@ export const load: PageServerLoad = async (event) => {
 			id: character.id,
 			name: character.name,
 			title: character.title,
+			pronouns: character.pronouns,
+			genderIdentity: character.genderIdentity,
 			species: character.species,
 			className: character.className,
 			level: character.level,

@@ -68,6 +68,14 @@ export function validCharacterAge(age: number): boolean {
 	return Number.isInteger(age) && age >= 1 && age <= 999;
 }
 
+/** Trims safe free-text character identity metadata and rejects controls or invalid lengths. */
+export function normalizeCharacterIdentity(value: string | null): string | null {
+	if (value === null) return null;
+	const normalized = value.trim();
+	if (normalized.length < 1 || normalized.length > 80 || /\p{Cc}/u.test(normalized)) return null;
+	return normalized;
+}
+
 export function validImageUrl(value: string): boolean {
 	if (value.length > 2048) return false;
 	try {
@@ -209,7 +217,6 @@ export interface StatInput {
 	hp: number;
 	maxHp: number;
 	defense: number;
-	attackBonus: number;
 	inventory?: readonly InventoryItem[];
 	gearCap?: number;
 }
@@ -272,7 +279,7 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 		instinct: body + mind + spirit,
 		hp: input.hp,
 		defense: input.defense + defenseBonus,
-		attackBonus: input.attackBonus + attackBonus,
+		attackBonus: body + mind + spirit + attackBonus,
 		skillValues
 	};
 
@@ -310,7 +317,6 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 			]
 		};
 	}
-	const attackBaseAdjustment = input.attackBonus - input.body - input.level;
 	const defenseBase = input.defense - input.level;
 	return {
 		stats,
@@ -325,7 +331,8 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 					{ label: 'Mind', value: mind },
 					{ label: 'Spirit', value: spirit }
 				],
-				formula: 'Informational total; it does not currently drive checks.'
+				formula:
+					'Effective Body + Effective Mind + Effective Spirit; forms the attribute portion of Attack.'
 			},
 			defense: {
 				label: 'Defense',
@@ -340,13 +347,12 @@ function deriveStatResult(input: StatInput): { stats: DerivedStats; breakdowns: 
 				label: 'Attack',
 				total: stats.attackBonus,
 				parts: [
-					{ label: 'Body base', value: input.body },
-					{ label: 'Level', value: input.level },
-					...(attackBaseAdjustment !== 0
-						? [{ label: 'Base attack adjustment', value: attackBaseAdjustment }]
-						: []),
+					{ label: 'Effective Body', value: body },
+					{ label: 'Effective Mind', value: mind },
+					{ label: 'Effective Spirit', value: spirit },
 					{ label: 'Attack equipment', value: attackBonus }
-				]
+				],
+				formula: 'Effective Body + Effective Mind + Effective Spirit (Instinct) + Attack equipment'
 			}
 		}
 	};

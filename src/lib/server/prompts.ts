@@ -19,19 +19,19 @@ import { toInventoryViewItem } from './inventory-view';
  */
 
 export const BRUTALITY_PROMPTS: readonly string[] = [
-	'Soft. Injuries are mild, the atmosphere gentle, and danger distant. Keep stakes low. Do not describe injuries in explicit detail.',
-	'Fair. Combat is tense but survivable; wounds are treated with care and defeat is recoverable. Wounds and consequences may be narrated when the authoritative outcome records them, and only then; never invent an injury, persistent harm, or death that the outcome does not record.',
-	'Grim. Danger is real, injuries are vivid, and death is a genuine possibility. When the authoritative outcome records damage, wounds, or injury, describe it vividly and let it persist in the narration - a recorded broken leg is painful and leaves the character limping for the rest of the run. Never narrate a wound, persistent injury, dismemberment, or death unless the outcome records it.',
-	'Harsh. Combat is brutal and blood may be described vividly, but injuries, scars, disfigurement, lost limbs, and death may appear only when the authoritative outcome records them. Never invent permanent harm.',
-	'Merciless. Use intense, graphic atmosphere around authoritative harm, but never add damage, death, dismemberment, disfigurement, or permanent injury that the outcome does not explicitly record.'
+		'Soft. Injuries are mild, the atmosphere gentle, and danger distant. Keep stakes low. Do not describe injuries in explicit detail.',
+	'Fair. Combat is tense but survivable; wounds are treated with care and defeat is recoverable. Injuries are expected and should be described as such.',
+	'Grim. Danger is real, injuries are vivid, and death is a genuine possibility. Give realistic descriptions of injuries and damage is persistent - if a character breaks a leg, it is painful and they will be limping for the rest of their dungeon run.',
+	'Harsh. Combat is brutal, blood is present, and characters come away scarred by what they face if they survive at all. Death is expected and injuries are harsh. Loss of limbs, eyes, disfigurations are all possible and persistent. Death at the end of a run is expected.',
+	'Merciless. The dungeon is lethal, losses feel permanent, and survival is earned at a steep price. Loss of limbs, eyes, horribly disfiguring injuries are expected and carry over. Be gratuitous and over-the-top in descriptions of blood, gore, or death.'
 ];
 
 export const DEBAUCHERY_PROMPTS: readonly string[] = [
-	'Chaste. Include no sexual content, sexualized nudity, or sexual innuendo.',
-	'Suggestive. Allow only mild adult flirtation or innuendo; keep intimacy off-screen and non-explicit. All depicted participants are adults of their species. Never depict minors or ambiguous adulthood, coercion, sexual violence, or sexualized punishment or defeat.',
-	'Explicit. Adult consensual content is permitted when the scene supports it. Consent must be clear and ongoing, and all depicted participants are adults of their species. Never depict minors or ambiguous adulthood, coercion, sexual violence, or sexualized punishment or defeat.',
-	'Intense. Adult consensual content may be direct and passionate when the scene supports it. Consent must be clear, enthusiastic, and ongoing, and all depicted participants are adults of their species. Never depict minors or ambiguous adulthood, coercion, sexual violence, or sexualized punishment or defeat.',
-	'Unrestrained. Adult consensual content may be explicit and adventurous when the scene supports it. Consent must be clear, enthusiastic, and ongoing, and all depicted participants are adults of their species. Never depict minors or ambiguous adulthood, coercion, sexual violence, or sexualized punishment or defeat.'
+	'Chaste. Do not describe genitalia. Characters and monsters are null. No explicit content.',
+	'Suggestive. You may describe genitalia or naked bodies. Sexual innuendos are allowed, but no explicit content.',
+	'Explicit. Adult and sexual themes are permitted. Upon character defeat, a sexual pairing between the character and monster or trap are expected. Assume character consents.',
+	'Horny. Monsters and traps in the dungeon are explicitly horny and will constantly attempt to have sex with the players character even in combat. Defeat is fully sexualized and upon loss, monsters will rape the player in every instance. Traps are also inherently sexual in nature. Most monsters will also have kinks or fetishes and should play into the rape. The more the player character resists, the more the sexual scenario should be painful.',
+	'Kinky. Rape is inevitable. Monsters and traps in the dungeon are horny and kinky and will constantly attempt to rape the player character, even in combat. Defeat and rape is fully sexualized and traumatic and can cause permanent effects or injury. Monsters and traps have dark, insidious kinks that can include dark things like forced watersports, cock and ball torture, sadism, castration, wound fucking, etc. It is dry and it is exceptionally painful with no mercy. If the player is defeated and is at 0 hp, they should be raped to death.'
 ];
 
 /**
@@ -217,18 +217,17 @@ export function composeProse(input: {
 			: mode === 'failure_consequence'
 				? [
 						`Write exactly ${target} distinct substantial paragraphs of aftermath and punishment consistent with the recorded outcome, HP delta, recorded injury, and brutality directive.`,
-						'Boss or final-defeat extra length is for drama only, never extra mechanics, injury, harm, or death. Do not add mechanics, damage, injury, permanent harm, dismemberment, or death. Debauchery controls length here, but may contribute clearly adult, consensual decadent or humiliating atmosphere only when supported by the supplied scene; never include coercion, sexual violence, coercive sexual punishment, sexualized punishment or defeat, minors, or ambiguous adulthood.',
 						HIDDEN_REWARDS_RULE
 					]
 				: failedOrdinary
 					? [
 							`Write exactly ${target} distinct substantial paragraphs depicting the failed action, the opponent or hazard response, the beatdown and consequences, the recorded injury, and the aftermath. Stay strictly within the brutality and debauchery directives.`,
-							'Do not invent damage, state, injury, permanent harm, dismemberment, or death. Keep every detail consistent with the authoritative outcome, HP delta, recorded injury, and roll margin; never reverse the failure.',
+							'Do not invent damage or death. Keep every detail consistent with the authoritative outcome, HP delta, recorded injury, and roll margin; never reverse the failure.',
 							HIDDEN_REWARDS_RULE
 						]
 					: [
 							`Describe the following scene and its outcome in vivid, in-world prose, in exactly ${target} substantial paragraphs. Stay strictly within the brutality and debauchery directives.`,
-							'Paragraph one shows the submitted action unfolding as a physical sequence and the opponent or hazard responding. Paragraph two shows the exact authoritative outcome and its aftermath, with any wound or consequence consistent with the HP delta, injury, and brutality, and with the roll margin. Never reverse a success or failure, and never invent state, rewards, or injuries beyond what the outcome records.',
+							'Paragraph one shows the submitted action unfolding as a physical sequence and the opponent or hazard responding. Later paragraphs shows the exact authoritative outcome and its aftermath, with any wound or consequence consistent with the HP delta, injury, and brutality, and with the roll margin. Never reverse a success or failure, and never invent state, rewards, or injuries beyond what the outcome records.',
 							HIDDEN_REWARDS_RULE
 						];
 	const user = [

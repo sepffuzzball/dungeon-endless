@@ -19,7 +19,7 @@ import { toInventoryViewItem } from './inventory-view';
  */
 
 export const BRUTALITY_PROMPTS: readonly string[] = [
-		'Soft. Injuries are mild, the atmosphere gentle, and danger distant. Keep stakes low. Do not describe injuries in explicit detail.',
+	'Soft. Injuries are mild, the atmosphere gentle, and danger distant. Keep stakes low. Do not describe injuries in explicit detail.',
 	'Fair. Combat is tense but survivable; wounds are treated with care and defeat is recoverable. Injuries are expected and should be described as such.',
 	'Grim. Danger is real, injuries are vivid, and death is a genuine possibility. Give realistic descriptions of injuries and damage is persistent - if a character breaks a leg, it is painful and they will be limping for the rest of their dungeon run.',
 	'Harsh. Combat is brutal, blood is present, and characters come away scarred by what they face if they survive at all. Death is expected and injuries are harsh. Loss of limbs, eyes, disfigurations are all possible and persistent. Death at the end of a run is expected.',

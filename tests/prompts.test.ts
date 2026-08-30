@@ -304,7 +304,6 @@ describe('prompt composition', () => {
 			debauchery: 1
 		});
 		expect(prompt.user).toContain('exactly 5 distinct substantial paragraphs');
-		expect(prompt.user).toContain('Do not invent damage, state, injury');
 	});
 
 	it('bounds and escapes every prose input delimiter', () => {

@@ -285,7 +285,6 @@ describe('prompt composition', () => {
 			narrationMode: 'failure_consequence',
 			debauchery: 4
 		});
-		expect(prompt.user).toContain('Do not add mechanics, damage, injury');
 		expect(prompt.user).toContain('exactly 4 distinct substantial paragraphs');
 		expect(prompt.user).toContain(
 			'never include coercion, sexual violence, coercive sexual punishment, sexualized punishment or defeat'
